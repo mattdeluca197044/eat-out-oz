@@ -1,0 +1,6 @@
+{
+  "name": "dine-out-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Serverless proxy for Google Places API — keeps the API key off the client."
+}
