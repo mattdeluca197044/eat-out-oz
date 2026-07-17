@@ -4,6 +4,16 @@
 // the browser — it's read from an environment variable set in Vercel.
 
 export default async function handler(req, res) {
+  // Allow this endpoint to be called from any website's JavaScript
+  // (e.g. the Claude artifact preview, or wherever the site ends up hosted).
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.status(204).end();
+  }
+
   const { suburb, category } = req.query;
 
   if (!suburb || !suburb.trim()) {
