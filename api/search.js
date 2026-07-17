@@ -1,4 +1,5 @@
-// GET /api/search?suburb=Newtown&category=restaurant
+
+}// GET /api/search?suburb=Newtown&category=restaurant
 //
 // Proxies a text search to the Google Places API. The API key never reaches
 // the browser — it's read from an environment variable set in Vercel.
@@ -31,17 +32,42 @@ export default async function handler(req, res) {
     "restaurants";
 
   const query = `${categoryTerm} in ${suburb}, Sydney`;
-  const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`;
+  const baseUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`;
+
+  // Google returns up to 20 results per page, up to 3 pages (60 total) via
+  // a next_page_token. The token needs a moment to activate, so we wait
+  // briefly between pages.
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   try {
-    const response = await fetch(url);
-    const data = await response.json();
+    let allResults = [];
+    let nextPageToken = null;
+    let page = 0;
+    const MAX_PAGES = 3;
 
-    if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
-      return res.status(502).json({ error: "Places API error", status: data.status, message: data.error_message });
-    }
+    do {
+      const pageUrl = nextPageToken
+        ? `${baseUrl}&pagetoken=${nextPageToken}`
+        : baseUrl;
 
-    const results = (data.results || []).map((place) => ({
+      if (nextPageToken) await sleep(2000); // token activation delay
+
+      const response = await fetch(pageUrl);
+      const data = await response.json();
+
+      if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+        // If we already have results from earlier pages, return those rather
+        // than failing the whole request over a later-page error.
+        if (allResults.length) break;
+        return res.status(502).json({ error: "Places API error", status: data.status, message: data.error_message });
+      }
+
+      allResults = allResults.concat(data.results || []);
+      nextPageToken = data.next_page_token || null;
+      page++;
+    } while (nextPageToken && page < MAX_PAGES);
+
+    const results = allResults.map((place) => ({
       name: place.name,
       address: place.formatted_address,
       rating: place.rating ?? null,
