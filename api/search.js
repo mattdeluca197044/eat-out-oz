@@ -1,5 +1,5 @@
 
-}// GET /api/search?suburb=Newtown&category=restaurant
+// GET /api/search?suburb=Newtown&category=restaurant
 //
 // Proxies a text search to the Google Places API. The API key never reaches
 // the browser — it's read from an environment variable set in Vercel.
@@ -32,47 +32,22 @@ export default async function handler(req, res) {
     "restaurants";
 
   const query = `${categoryTerm} in ${suburb}, Sydney`;
-  const baseUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`;
-
-  // Google returns up to 20 results per page, up to 3 pages (60 total) via
-  // a next_page_token. The token needs a moment to activate, so we wait
-  // briefly between pages.
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`;
 
   try {
-    let allResults = [];
-    let nextPageToken = null;
-    let page = 0;
-    const MAX_PAGES = 3;
+    const response = await fetch(url);
+    const data = await response.json();
 
-    do {
-      const pageUrl = nextPageToken
-        ? `${baseUrl}&pagetoken=${nextPageToken}`
-        : baseUrl;
+    if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
+      return res.status(502).json({ error: "Places API error", status: data.status, message: data.error_message });
+    }
 
-      if (nextPageToken) await sleep(2000); // token activation delay
-
-      const response = await fetch(pageUrl);
-      const data = await response.json();
-
-      if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
-        // If we already have results from earlier pages, return those rather
-        // than failing the whole request over a later-page error.
-        if (allResults.length) break;
-        return res.status(502).json({ error: "Places API error", status: data.status, message: data.error_message });
-      }
-
-      allResults = allResults.concat(data.results || []);
-      nextPageToken = data.next_page_token || null;
-      page++;
-    } while (nextPageToken && page < MAX_PAGES);
-
-    const results = allResults.map((place) => ({
+    const results = (data.results || []).map((place) => ({
       name: place.name,
       address: place.formatted_address,
       rating: place.rating ?? null,
       reviews: place.user_ratings_total ?? 0,
-      priceLevel: place.price_level ?? null, // 0-4, Google's scale; map to your $ ranges client-side
+      priceLevel: place.price_level ?? null,
       placeId: place.place_id,
       lat: place.geometry?.location?.lat ?? null,
       lng: place.geometry?.location?.lng ?? null,
@@ -80,8 +55,6 @@ export default async function handler(req, res) {
       types: place.types || [],
     }));
 
-    // Cache each suburb+category combo at the edge for an hour so repeat
-    // searches don't re-bill your Places API quota.
     res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
     return res.status(200).json({ query, count: results.length, results });
   } catch (err) {
