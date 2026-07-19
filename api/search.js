@@ -1,5 +1,3 @@
-
-
 // GET /api/search?suburb=Newtown&category=restaurant
 //
 // Proxies a text search to the Google Places API. The API key never reaches
