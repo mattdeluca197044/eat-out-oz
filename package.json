@@ -1,7 +1,12 @@
 {
+ {
   "name": "dine-out-backend",
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Serverless proxy for Google Places API"
+  "description": "Serverless proxy for Google Places API and restaurant booking system",
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.0"
+  }
+}
 }
