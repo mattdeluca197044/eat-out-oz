@@ -110,9 +110,18 @@ export default async function handler(req, res) {
       if (!wantFull && page >= 2) break;
     } while (nextPageToken && page < MAX_PAGES);
 
-    let results = allResults.map((place) => ({
+    function extractSuburb(address) {
+  if (!address) return null;
+  // Australian addresses from Google typically look like:
+  // "294 King St, Newtown NSW 2042, Australia"
+  const match = address.match(/,\s*([A-Za-z\s'-]+?)\s+(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\s+\d{4}/);
+  return match ? match[1].trim() : null;
+}
+
+let results = allResults.map((place) => ({
       name: place.name,
       address: place.formatted_address,
+      suburb: extractSuburb(place.formatted_address),
       rating: place.rating ?? null,
       reviews: place.user_ratings_total ?? 0,
       priceLevel: place.price_level ?? null,
