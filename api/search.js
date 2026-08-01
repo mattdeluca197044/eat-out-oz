@@ -74,6 +74,8 @@ export default async function handler(req, res) {
   const categoryTerm =
     category === "cafe" ? "cafes" :
     category === "takeaway" ? "takeaway food" :
+    category === "pub" ? "pub restaurants" :
+    category === "hatted" ? "hatted fine dining restaurant" :
     "restaurants";
 
   const cuisinePrefix = cuisine && cuisine.trim() ? `${cuisine.trim().slice(0, 40)} ` : "";
