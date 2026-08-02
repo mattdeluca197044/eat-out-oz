@@ -36,9 +36,21 @@ export default async function handler(req, res) {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    const rows = await sql`SELECT id, place_id FROM restaurants WHERE place_id = ANY(${ids}) AND subscription_status = 'active'`;
+    const rows = await sql`
+      SELECT id, place_id, description, instagram_url, facebook_url, website_url
+      FROM restaurants
+      WHERE place_id = ANY(${ids}) AND subscription_status = 'active'
+    `;
     const matches = {};
-    rows.forEach((r) => { matches[r.place_id] = r.id; });
+    rows.forEach((r) => {
+      matches[r.place_id] = {
+        restaurantId: r.id,
+        description: r.description,
+        instagramUrl: r.instagram_url,
+        facebookUrl: r.facebook_url,
+        websiteUrl: r.website_url,
+      };
+    });
     return res.status(200).json({ matches });
   } catch (err) {
     return res.status(500).json({ error: "Lookup failed", detail: err.message });
