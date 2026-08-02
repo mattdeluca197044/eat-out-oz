@@ -93,6 +93,11 @@ export default async function handler(req, res) {
     const restaurantId = await getRestaurantIdFromToken(sql, req.headers.authorization);
     if (!restaurantId) return res.status(401).json({ error: "Log in required" });
 
+    const [restaurant] = await sql`SELECT subscription_status FROM restaurants WHERE id = ${restaurantId}`;
+    if (!restaurant || restaurant.subscription_status !== "active") {
+      return res.status(402).json({ error: "An active subscription is required to manage bookings. Please subscribe from your dashboard." });
+    }
+
     const { date, time, capacity } = req.body || {};
     if (!date || !time || !capacity) {
       return res.status(400).json({ error: "date, time and capacity are required" });
