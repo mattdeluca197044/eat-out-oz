@@ -36,7 +36,7 @@ export default async function handler(req, res) {
   const sql = neon(process.env.DATABASE_URL);
 
   try {
-    const rows = await sql`SELECT id, place_id FROM restaurants WHERE place_id = ANY(${ids})`;
+    const rows = await sql`SELECT id, place_id FROM restaurants WHERE place_id = ANY(${ids}) AND subscription_status = 'active'`;
     const matches = {};
     rows.forEach((r) => { matches[r.place_id] = r.id; });
     return res.status(200).json({ matches });
