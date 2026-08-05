@@ -37,7 +37,7 @@ export default async function handler(req, res) {
 
   try {
     const rows = await sql`
-      SELECT id, place_id, description, instagram_url, facebook_url, website_url
+      SELECT id, place_id, description, instagram_url, facebook_url, website_url, current_special
       FROM restaurants
       WHERE place_id = ANY(${ids}) AND subscription_status = 'active'
     `;
@@ -49,6 +49,7 @@ export default async function handler(req, res) {
         instagramUrl: r.instagram_url,
         facebookUrl: r.facebook_url,
         websiteUrl: r.website_url,
+        currentSpecial: r.current_special,
       };
     });
     return res.status(200).json({ matches });
