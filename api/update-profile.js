@@ -46,10 +46,13 @@ export default async function handler(req, res) {
   }
   const token = authHeader.slice(7);
 
-  const { description, instagramUrl, facebookUrl, websiteUrl } = req.body || {};
+  const { description, instagramUrl, facebookUrl, websiteUrl, currentSpecial } = req.body || {};
 
   if (description && description.length > 1000) {
     return res.status(400).json({ error: "Description is too long (max 1000 characters)" });
+  }
+  if (currentSpecial && currentSpecial.length > 200) {
+    return res.status(400).json({ error: "Special/promotion text is too long (max 200 characters)" });
   }
   for (const [label, url] of [["Instagram", instagramUrl], ["Facebook", facebookUrl], ["Website", websiteUrl]]) {
     if (url && !isValidUrl(url)) {
@@ -77,7 +80,8 @@ export default async function handler(req, res) {
       SET description = ${description || null},
           instagram_url = ${instagramUrl || null},
           facebook_url = ${facebookUrl || null},
-          website_url = ${websiteUrl || null}
+          website_url = ${websiteUrl || null},
+          current_special = ${currentSpecial || null}
       WHERE id = ${restaurant.id}
     `;
 
