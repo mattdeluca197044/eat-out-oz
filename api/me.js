@@ -40,7 +40,7 @@ export default async function handler(req, res) {
   try {
     const rows = await sql`
       SELECT r.id, r.name, r.owner_email, r.place_id, r.subscription_status,
-             r.description, r.instagram_url, r.facebook_url, r.website_url
+             r.description, r.instagram_url, r.facebook_url, r.website_url, r.current_special
       FROM sessions s JOIN restaurants r ON r.id = s.restaurant_id
       WHERE s.token = ${token} AND s.expires_at > now()
     `;
