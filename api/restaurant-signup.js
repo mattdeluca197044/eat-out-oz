@@ -1,5 +1,8 @@
-// POST /api/restaurant-login
-// Body: { email, password }
+// POST /api/restaurant-signup
+// Body: { name, email, password, placeId }
+// Creates a new restaurant account with a random per-user salt and scrypt
+// password hash, then logs the restaurant in immediately (same as
+// restaurant-login.js) by issuing a session token.
 import { neon } from "@neondatabase/serverless";
 import crypto from "crypto";
 const ALLOWED_ORIGINS = [
@@ -42,52 +45,58 @@ async function checkRateLimit(sql, key, maxRequests, windowSeconds) {
   return true;
 }
 
-// A fixed dummy salt used only when no account exists for the given email.
-// This makes the scrypt hashing step run either way, so a non-existent
-// email doesn't return measurably faster than a wrong password for a real
-// account — closing off email-enumeration-by-timing.
-const DUMMY_SALT = "dummy_salt_for_timing_consistency_only";
-
-// Compares two hex-encoded hashes in constant time. A plain !== comparison
-// can exit early on the first mismatched byte, which is a (minor) timing
-// side-channel; timingSafeEqual avoids that.
-function hashesMatch(hashHex, storedHashHex) {
-  if (!storedHashHex) return false;
-  const a = Buffer.from(hashHex, "hex");
-  const b = Buffer.from(storedHashHex, "hex");
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 8;
 
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
-  const { email, password } = req.body || {};
-  if (!email || !password) {
-    return res.status(400).json({ error: "email and password are required" });
+
+  const { name, email, password, placeId } = req.body || {};
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: "name, email and password are required" });
   }
+  if (!EMAIL_RE.test(email)) {
+    return res.status(400).json({ error: "Please enter a valid email address" });
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return res.status(400).json({ error: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` });
+  }
+  if (name.length > 200) {
+    return res.status(400).json({ error: "Restaurant name is too long" });
+  }
+
   const sql = neon(process.env.DATABASE_URL);
   const ip = getClientIp(req);
-  // Limit by IP (stop brute force sweeps) AND by email (stop targeted attacks on one account)
-  const ipAllowed = await checkRateLimit(sql, `login-ip:${ip}`, 15, 300);
-  const emailAllowed = await checkRateLimit(sql, `login-email:${email.toLowerCase()}`, 8, 300);
-  if (!ipAllowed || !emailAllowed) {
-    return res.status(429).json({ error: "Too many login attempts. Please wait a few minutes and try again." });
+
+  // Rate limit signups by IP to slow down mass fake-account creation.
+  // (No per-email limit here, unlike login — an attacker can't "guess"
+  // their way into owning an email via signup, since it's a one-shot
+  // create, not a repeated auth check.)
+  const ipAllowed = await checkRateLimit(sql, `signup-ip:${ip}`, 10, 3600);
+  if (!ipAllowed) {
+    return res.status(429).json({ error: "Too many signup attempts. Please wait a while and try again." });
   }
+
   try {
-    const rows = await sql`SELECT * FROM restaurants WHERE owner_email = ${email.toLowerCase()}`;
-    const restaurant = rows[0];
-
-    // Always hash, even if no account exists, using a dummy salt in that
-    // case — keeps the response time consistent so an attacker can't infer
-    // which emails are registered from how fast the response comes back.
-    const saltToUse = restaurant?.password_salt || DUMMY_SALT;
-    const hash = crypto.scryptSync(password, saltToUse, 64).toString("hex");
-
-    if (!restaurant || !hashesMatch(hash, restaurant.password_hash)) {
-      return res.status(401).json({ error: "Invalid email or password" });
+    const existing = await sql`SELECT id FROM restaurants WHERE owner_email = ${email.toLowerCase()}`;
+    if (existing.length) {
+      // Deliberately vague — don't confirm/deny which emails already have
+      // accounts to a caller who isn't authenticated as that account.
+      return res.status(409).json({ error: "An account with that email already exists. Try logging in instead." });
     }
+
+    const salt = crypto.randomBytes(16).toString("hex");
+    const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+
+    const rows = await sql`
+      INSERT INTO restaurants (name, owner_email, password_hash, password_salt, place_id, subscription_status)
+      VALUES (${name}, ${email.toLowerCase()}, ${hash}, ${salt}, ${placeId || null}, 'inactive')
+      RETURNING id, name, owner_email
+    `;
+    const restaurant = rows[0];
 
     const token = crypto.randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 24 * 7); // 7 days
@@ -95,12 +104,18 @@ export default async function handler(req, res) {
       INSERT INTO sessions (token, restaurant_id, expires_at)
       VALUES (${token}, ${restaurant.id}, ${expiresAt.toISOString()})
     `;
-    return res.status(200).json({
+
+    return res.status(201).json({
       token,
       restaurant: { id: restaurant.id, name: restaurant.name, owner_email: restaurant.owner_email },
     });
   } catch (err) {
-    console.error("restaurant-login error:", err); // keep detail server-side only
-    return res.status(500).json({ error: "Login failed" });
+    console.error("restaurant-signup error:", err); // keep detail server-side only
+    // Neon/Postgres unique-constraint violation, in case two signups race
+    // each other for the same email between our existence check and insert.
+    if (err.message && err.message.includes("duplicate key")) {
+      return res.status(409).json({ error: "An account with that email already exists. Try logging in instead." });
+    }
+    return res.status(500).json({ error: "Signup failed" });
   }
 }
