@@ -321,7 +321,13 @@ export default async function handler(req, res) {
       });
     }
 
-    res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
+    // Shortened while actively iterating on search logic — a long cache
+    // here was masking fixes behind stale 304 responses (a fixed query
+    // would keep returning an old broken response for up to an hour after
+    // each deploy, since Vercel's edge cache held onto it). 60 seconds is
+    // enough to absorb rapid repeat requests without hiding future changes
+    // for long. Worth raising again once the search logic has stabilised.
+    res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
     return res.status(200).json({
       query: fullQuery,
       detectedState: visitor.stateCode,
