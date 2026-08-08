@@ -2,9 +2,7 @@
 // Headers: Authorization: Bearer <token>
 // Creates a Stripe Checkout session for the $29/month restaurant subscription
 // and returns the URL to redirect the restaurant owner to.
-
 import { neon } from "@neondatabase/serverless";
-
 const ALLOWED_ORIGINS = [
   "https://outtoeat.com.au",
   "https://www.outtoeat.com.au",
@@ -14,7 +12,6 @@ const ALLOWED_ORIGINS = [
   "https://dine-out-app.vercel.app",
   "https://restaurant-portal-seven.vercel.app",
 ];
-
 function setCors(req, res) {
   const origin = req.headers.origin;
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
@@ -24,28 +21,24 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
-
+// Server-side price reference — the client never supplies an amount, so
+// there's no way to tamper with what gets charged.
 const STRIPE_PRICE_ID = "price_1TzpatLJlEBY2b7SRGuKfmy4";
 const PORTAL_URL = "https://restaurant-portal-seven.vercel.app";
-
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
-
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return res.status(401).json({ error: "Log in required" });
   }
   const token = authHeader.slice(7);
-
   const stripeKey = process.env.STRIPE_SECRET_KEY;
   if (!stripeKey) {
     return res.status(500).json({ error: "Server is missing STRIPE_SECRET_KEY" });
   }
-
   const sql = neon(process.env.DATABASE_URL);
-
   try {
     const sessionRows = await sql`
       SELECT r.id, r.name, r.owner_email, r.stripe_customer_id
@@ -54,7 +47,6 @@ export default async function handler(req, res) {
     `;
     const restaurant = sessionRows[0];
     if (!restaurant) return res.status(401).json({ error: "Session expired, please log in again" });
-
     const params = new URLSearchParams();
     params.append("mode", "subscription");
     params.append("line_items[0][price]", STRIPE_PRICE_ID);
@@ -68,7 +60,6 @@ export default async function handler(req, res) {
       params.set("customer", restaurant.stripe_customer_id);
       params.delete("customer_email");
     }
-
     const stripeRes = await fetch("https://api.stripe.com/v1/checkout/sessions", {
       method: "POST",
       headers: {
@@ -77,14 +68,17 @@ export default async function handler(req, res) {
       },
       body: params.toString(),
     });
-
     const stripeData = await stripeRes.json();
     if (!stripeRes.ok) {
-      return res.status(502).json({ error: "Stripe error", detail: stripeData.error?.message });
+      console.error("Stripe checkout session error:", stripeData.error); // full detail server-side only
+      // Stripe's own error message is written for end users (e.g. "your
+      // card was declined") so it's fine to pass through, unlike internal
+      // exception messages below.
+      return res.status(502).json({ error: stripeData.error?.message || "Stripe error" });
     }
-
     return res.status(200).json({ url: stripeData.url });
   } catch (err) {
-    return res.status(500).json({ error: "Checkout session creation failed", detail: err.message });
+    console.error("create-checkout-session error:", err); // keep detail server-side only
+    return res.status(500).json({ error: "Checkout session creation failed" });
   }
 }
