@@ -117,27 +117,21 @@ export default async function handler(req, res) {
 
   const cuisinePrefix = cuisine && cuisine.trim() ? `${cuisine.trim().slice(0, 40)} ` : "";
 
-  // Detect which Australian state the visitor is in — used only as a soft
-  // ranking bias below, NOT baked into the query text. Forcing a specific
-  // state name into the search text (e.g. "Manly, Victoria, Australia")
-  // breaks the search whenever geo-detection is imprecise (IP geolocation
-  // isn't exact — some ISPs route through a different state's POP) or
-  // whenever someone legitimately searches a suburb outside their own
-  // state (e.g. planning an interstate trip). A generic ", Australia"
-  // suffix is enough to fix the original cross-country result bug.
+  // Detect which Australian state the visitor is in — currently only
+  // returned in the response for potential future use (e.g. client-side
+  // sorting), not used to constrain the Google query itself. Earlier
+  // attempts to bias the Places API call using location+radius+region
+  // caused Google to return zero results for otherwise-valid searches
+  // (Text Search doesn't reliably treat these as a pure ranking bias in
+  // practice, despite the docs describing them that way) — so the fix for
+  // the original wrong-country-results bug is just the plain ", Australia"
+  // suffix below, backed up by the address filter further down.
   const visitor = getVisitorLocation(req);
   const query = `${cuisinePrefix}${categoryTerm} in ${suburb}, Australia`;
 
-  // location + radius bias (not filter) the results toward the visitor's
-  // state, nudging ranking without excluding a legitimate match elsewhere
-  // in the country; region=au additionally biases toward the .au ccTLD.
-  const STATE_RADIUS_METERS = 250000; // ~250km — wide bias, not a hard boundary
   const baseUrl =
     `https://maps.googleapis.com/maps/api/place/textsearch/json` +
     `?query=${encodeURIComponent(query)}` +
-    `&location=${visitor.lat},${visitor.lng}` +
-    `&radius=${STATE_RADIUS_METERS}` +
-    `&region=au` +
     `&key=${key}`;
 
   const wantFull = req.query.full === "1";
