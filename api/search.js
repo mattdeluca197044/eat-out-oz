@@ -82,6 +82,22 @@ function getVisitorLocation(req) {
   };
 }
 
+// The frontend's single search box doubles as both a suburb field and a
+// free-text field, so whatever's typed there gets sent as "suburb" even
+// when it also contains the cuisine (e.g. someone selects "Lebanese" from
+// the cuisine dropdown AND types "lebanese north parramatta"). Left as-is,
+// that duplicated word ends up baked into the Google query text as
+// "in lebanese north parramatta, Australia" — not a real place, so Google
+// resolves nothing, the same failure mode as an outright wrong location.
+// Stripping the selected cuisine word back out first turns it into the
+// real, resolvable suburb "North Parramatta".
+function stripCuisineFromSuburb(suburbText, cuisineText) {
+  if (!cuisineText || !cuisineText.trim()) return suburbText;
+  const escaped = cuisineText.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`\\b${escaped}\\b`, "gi");
+  return suburbText.replace(re, "").replace(/\s+/g, " ").trim();
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -133,7 +149,15 @@ export default async function handler(req, res) {
   // names. With a location bias, that same unresolvable query still
   // anchors near the visitor instead of spanning the whole country.
   const visitor = getVisitorLocation(req);
-  const query = `${cuisinePrefix}${categoryTerm} in ${suburb}, Australia`;
+  const cleanedSuburb = stripCuisineFromSuburb(suburb, cuisine);
+  // If stripping the cuisine word leaves nothing (e.g. the search box only
+  // had "lebanese" typed in it, no suburb at all), don't bake an empty or
+  // nonsense location into the query — fall back to a bare category+cuisine
+  // search, relying on the location/radius bias below to keep it anchored
+  // near the visitor instead of resolving to nothing.
+  const query = cleanedSuburb
+    ? `${cuisinePrefix}${categoryTerm} in ${cleanedSuburb}, Australia`
+    : `${cuisinePrefix}${categoryTerm} in Australia`;
 
   const LOCATION_BIAS_RADIUS_METERS = 100000; // ~100km — metro-scale bias, not a hard boundary
   const baseUrl =
