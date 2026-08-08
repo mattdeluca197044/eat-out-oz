@@ -254,45 +254,32 @@ export default async function handler(req, res) {
       const requested = cuisine.trim().toLowerCase();
 
       // Google's legacy Places Text Search doesn't return a reliable
-      // cuisine field — the only signal available is the business's name
-      // text. The previous approach kept a result unless its name
-      // mentioned a *different* cuisine, which meant any generically-named
-      // place (no cuisine word at all) slipped through unfiltered — that
-      // was the cause of unrelated results showing up in, e.g., a
-      // "Lebanese" search. This requires a positive match instead: the
-      // name has to actually contain the requested cuisine or a synonym.
-      // Trade-off: a genuinely-Lebanese restaurant with a name that
-      // doesn't mention "Lebanese" (e.g. a proper-noun name) may now be
-      // missed — but that's a much better failure mode than showing
-      // unrelated restaurants under the wrong cuisine.
-      const CUISINE_SYNONYMS = {
-        italian: ["italian", "pizzeria", "trattoria", "osteria", "ristorante"],
-        thai: ["thai"],
-        chinese: ["chinese", "cantonese", "szechuan", "sichuan", "dim sum"],
-        japanese: ["japanese", "sushi", "ramen", "izakaya", "yakitori", "teppanyaki"],
-        indian: ["indian", "tandoori", "punjabi", "curry"],
-        mexican: ["mexican", "taqueria", "cantina"],
-        vietnamese: ["vietnamese", "pho", "banh mi"],
-        korean: ["korean", "k-bbq", "kbbq"],
-        lebanese: ["lebanese", "lebnani", "levantine"],
-        greek: ["greek", "souvlaki", "taverna"],
-        "modern australian": ["modern australian"],
-        seafood: ["seafood", "fish market", "oyster"],
-        vegan: ["vegan", "plant based", "plant-based"],
-        pizza: ["pizza", "pizzeria"],
-        burger: ["burger"],
-        french: ["french", "brasserie", "bistro"],
-        spanish: ["spanish", "tapas"],
-        turkish: ["turkish", "kebab"],
-        malaysian: ["malaysian", "malaysia"],
-        indonesian: ["indonesian", "indonesia"],
-        american: ["american", "diner"],
-      };
-      const synonyms = CUISINE_SYNONYMS[requested] || [requested];
-
+      // cuisine field, so any name-based filter here is a heuristic with
+      // real trade-offs either way:
+      //   - Requiring the name to POSITIVELY contain the cuisine word (an
+      //     earlier version of this filter) wrongly excluded genuinely
+      //     correct results with non-English business names, e.g. an
+      //     Arabic-named Lebanese restaurant with no English cuisine word
+      //     at all — confirmed happening in practice.
+      //   - Doing no filtering at all risks completely unrelated results
+      //     slipping through if Google's own text-search relevance is loose
+      //     for a given query.
+      // This strikes a middle ground: trust Google's relevance (helped by
+      // the cuisine already being part of the query text sent to it), and
+      // only exclude a result if its name explicitly signals a different,
+      // conflicting cuisine — catching obvious mismatches without punishing
+      // correctly-matched restaurants whose names just don't happen to
+      // mention the cuisine in English.
+      const KNOWN_CUISINES = [
+        "italian", "thai", "chinese", "japanese", "indian", "mexican", "vietnamese",
+        "korean", "lebanese", "greek", "seafood", "vegan", "pizza", "burger",
+        "french", "spanish", "turkish", "malaysian", "indonesian", "american",
+      ];
       results = results.filter((r) => {
         const text = r.name.toLowerCase();
-        return synonyms.some((s) => text.includes(s));
+        if (text.includes(requested)) return true;
+        const conflictsWithOther = KNOWN_CUISINES.some((c) => c !== requested && text.includes(c));
+        return !conflictsWithOther;
       });
     }
 
