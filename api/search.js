@@ -118,21 +118,29 @@ export default async function handler(req, res) {
 
   const cuisinePrefix = cuisine && cuisine.trim() ? `${cuisine.trim().slice(0, 40)} ` : "";
 
-  // Detect which Australian state the visitor is in — currently only
-  // returned in the response for potential future use (e.g. client-side
-  // sorting), not used to constrain the Google query itself. Earlier
-  // attempts to bias the Places API call using location+radius+region
-  // caused Google to return zero results for otherwise-valid searches
-  // (Text Search doesn't reliably treat these as a pure ranking bias in
-  // practice, despite the docs describing them that way) — so the fix for
-  // the original wrong-country-results bug is just the plain ", Australia"
-  // suffix below, backed up by the address filter further down.
+  // Detect which Australian state the visitor is in. The query TEXT itself
+  // never includes a hardcoded state name — that was tried previously and
+  // broke otherwise-valid searches whenever geo-detection was imprecise or
+  // the searched suburb was in a different state (e.g. "Manly, Victoria,
+  // Australia" resolves to nothing, since Manly isn't in Victoria).
+  //
+  // location/radius below is a genuine ranking bias, not text baked into
+  // the query, so it doesn't have that failure mode. It matters most when
+  // the "suburb" the frontend sends isn't an actual place at all — e.g. a
+  // cuisine word typed straight into the search box with no suburb chosen.
+  // Google can't resolve "in lebanese, Australia" to anywhere, so without
+  // a bias it falls back to a loose nationwide keyword match on business
+  // names. With a location bias, that same unresolvable query still
+  // anchors near the visitor instead of spanning the whole country.
   const visitor = getVisitorLocation(req);
   const query = `${cuisinePrefix}${categoryTerm} in ${suburb}, Australia`;
 
+  const LOCATION_BIAS_RADIUS_METERS = 100000; // ~100km — metro-scale bias, not a hard boundary
   const baseUrl =
     `https://maps.googleapis.com/maps/api/place/textsearch/json` +
     `?query=${encodeURIComponent(query)}` +
+    `&location=${visitor.lat},${visitor.lng}` +
+    `&radius=${LOCATION_BIAS_RADIUS_METERS}` +
     `&key=${key}`;
 
   const wantFull = req.query.full === "1";
@@ -165,34 +173,55 @@ export default async function handler(req, res) {
       if (!wantFull && page >= 2) break;
     } while (nextPageToken && page < MAX_PAGES);
 
-    function extractSuburb(address) {
-      if (!address) return null;
+    function extractSuburbAndState(address) {
+      if (!address) return { suburb: null, state: null };
       // Australian addresses from Google typically look like:
       // "294 King St, Newtown NSW 2042, Australia"
       const match = address.match(/,\s*([A-Za-z\s'-]+?)\s+(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\s+\d{4}/);
-      return match ? match[1].trim() : null;
+      return match ? { suburb: match[1].trim(), state: match[2] } : { suburb: null, state: null };
     }
 
     // Belt-and-braces filter: drop any result whose formatted_address doesn't
-    // end in "Australia" at all. location/radius bias makes these rare, but
-    // Text Search can still occasionally surface an unrelated overseas match
-    // for an ambiguous suburb name — this catches anything that slips through.
+    // end in "Australia" at all. Text Search can occasionally surface an
+    // unrelated overseas match for an ambiguous suburb name — this catches
+    // anything that slips through.
     let results = allResults
       .filter((place) => (place.formatted_address || "").includes("Australia"))
-      .map((place) => ({
-        name: place.name,
-        address: place.formatted_address,
-        suburb: extractSuburb(place.formatted_address),
-        rating: place.rating ?? null,
-        reviews: place.user_ratings_total ?? 0,
-        priceLevel: place.price_level ?? null,
-        placeId: place.place_id,
-        lat: place.geometry?.location?.lat ?? null,
-        lng: place.geometry?.location?.lng ?? null,
-        openNow: place.opening_hours?.open_now ?? null,
-        types: place.types || [],
-        cuisine: cuisine && cuisine.trim() ? cuisine.trim() : null,
-      }));
+      .map((place) => {
+        const { suburb: extractedSuburb, state } = extractSuburbAndState(place.formatted_address);
+        return {
+          name: place.name,
+          address: place.formatted_address,
+          suburb: extractedSuburb,
+          state,
+          rating: place.rating ?? null,
+          reviews: place.user_ratings_total ?? 0,
+          priceLevel: place.price_level ?? null,
+          placeId: place.place_id,
+          lat: place.geometry?.location?.lat ?? null,
+          lng: place.geometry?.location?.lng ?? null,
+          openNow: place.opening_hours?.open_now ?? null,
+          types: place.types || [],
+          cuisine: cuisine && cuisine.trim() ? cuisine.trim() : null,
+        };
+      });
+
+    // Some Australian suburb names exist in more than one state (Richmond,
+    // Brighton, Windsor, etc.). Without a location bias in the Google query
+    // (removed earlier — it caused unrelated zero-result failures), a
+    // search can return matches from several states at once. Rather than
+    // biasing the Google request itself again, disambiguate the response:
+    // only if the results actually span more than one state AND the
+    // visitor's own state is among them, narrow down to their state — this
+    // assumes an ambiguous shared suburb name most likely means the
+    // visitor's home state. If every result is from a single state (a
+    // suburb that only exists in one place, e.g. an interstate search),
+    // nothing is filtered, so genuine national/interstate searches are
+    // unaffected.
+    const statesPresent = new Set(results.map((r) => r.state).filter(Boolean));
+    if (statesPresent.size > 1 && statesPresent.has(visitor.stateCode)) {
+      results = results.filter((r) => !r.state || r.state === visitor.stateCode);
+    }
 
     if (cuisine && cuisine.trim()) {
       const requested = cuisine.trim().toLowerCase();
