@@ -117,17 +117,21 @@ export default async function handler(req, res) {
 
   const cuisinePrefix = cuisine && cuisine.trim() ? `${cuisine.trim().slice(0, 40)} ` : "";
 
-  // Detect which Australian state the visitor is in, and search relative to
-  // that instead of a hardcoded "Sydney" — this was the source of
-  // out-of-country / wrong-city results for visitors elsewhere in Australia.
+  // Detect which Australian state the visitor is in — used only as a soft
+  // ranking bias below, NOT baked into the query text. Forcing a specific
+  // state name into the search text (e.g. "Manly, Victoria, Australia")
+  // breaks the search whenever geo-detection is imprecise (IP geolocation
+  // isn't exact — some ISPs route through a different state's POP) or
+  // whenever someone legitimately searches a suburb outside their own
+  // state (e.g. planning an interstate trip). A generic ", Australia"
+  // suffix is enough to fix the original cross-country result bug.
   const visitor = getVisitorLocation(req);
-  const query = `${cuisinePrefix}${categoryTerm} in ${suburb}, ${visitor.stateName}, Australia`;
+  const query = `${cuisinePrefix}${categoryTerm} in ${suburb}, Australia`;
 
-  // location + radius bias the results toward the visitor's state; region=au
-  // additionally biases toward the .au ccTLD. Neither strictly filters (Text
-  // Search doesn't support a hard country filter), but combined they push
-  // results firmly toward the right country and state.
-  const STATE_RADIUS_METERS = 250000; // ~250km, wide enough to cover a state's populated area without being so wide it stops helping
+  // location + radius bias (not filter) the results toward the visitor's
+  // state, nudging ranking without excluding a legitimate match elsewhere
+  // in the country; region=au additionally biases toward the .au ccTLD.
+  const STATE_RADIUS_METERS = 250000; // ~250km — wide bias, not a hard boundary
   const baseUrl =
     `https://maps.googleapis.com/maps/api/place/textsearch/json` +
     `?query=${encodeURIComponent(query)}` +
