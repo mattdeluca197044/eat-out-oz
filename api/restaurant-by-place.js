@@ -1,7 +1,5 @@
 // GET /api/restaurant-by-place?placeIds=ChIJ...,ChIJ...
-
 import { neon } from "@neondatabase/serverless";
-
 const ALLOWED_ORIGINS = [
   "https://outtoeat.com.au",
   "https://www.outtoeat.com.au",
@@ -11,7 +9,6 @@ const ALLOWED_ORIGINS = [
   "https://dine-out-app.vercel.app",
   "https://restaurant-portal-seven.vercel.app",
 ];
-
 function setCors(req, res) {
   const origin = req.headers.origin;
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
@@ -21,23 +18,18 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
-
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Use GET" });
-
   const { placeIds } = req.query;
   if (!placeIds) return res.status(400).json({ error: "placeIds query param is required (comma separated)" });
-
   const ids = placeIds.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 500);
   if (!ids.length) return res.status(200).json({ matches: {} });
-
   const sql = neon(process.env.DATABASE_URL);
-
   try {
     const rows = await sql`
-      SELECT id, place_id, description, instagram_url, facebook_url, website_url, current_special
+      SELECT id, place_id, description, instagram_url, facebook_url, website_url, current_special, photos
       FROM restaurants
       WHERE place_id = ANY(${ids}) AND subscription_status = 'active'
     `;
@@ -50,10 +42,12 @@ export default async function handler(req, res) {
         facebookUrl: r.facebook_url,
         websiteUrl: r.website_url,
         currentSpecial: r.current_special,
+        photos: r.photos || [],
       };
     });
     return res.status(200).json({ matches });
   } catch (err) {
-    return res.status(500).json({ error: "Lookup failed", detail: err.message });
+    console.error("restaurant-by-place error:", err); // keep detail server-side only
+    return res.status(500).json({ error: "Lookup failed" });
   }
 }
