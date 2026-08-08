@@ -313,21 +313,23 @@ export default async function handler(req, res) {
         "korean", "lebanese", "greek", "seafood", "vegan", "pizza", "burger",
         "french", "spanish", "turkish", "malaysian", "indonesian", "american",
       ];
-      // Generic venue types Google's loose text relevance sometimes pulls
-      // into a cuisine-filtered search (e.g. a leagues club showing up for
-      // "Lebanese restaurants ... Parramatta") even though they're a venue
-      // category, not a themed cuisine restaurant. This is a safe exclusion
-      // to add on top of the cuisine check above — it can't accidentally
-      // exclude a genuine ethnic restaurant, since none of these phrases
-      // describe a style of cuisine.
-      const GENERIC_VENUE_TYPES = [
-        "leagues club", "rsl", "bowling club", "golf club", "sports club",
-        "workers club", "services club",
-      ];
+      // Pubs and licensed clubs are, almost by definition, general
+      // multi-cuisine venues — a pub or club is rarely itself "a Lebanese
+      // restaurant" even if Google's loose text relevance includes it for
+      // a cuisine-prefixed query (confirmed happening: "Club Parramatta",
+      // "LILYMU", "Ruse Bar and Brasserie" all surfaced under pub/club
+      // category searches with no cuisine signal in their names at all).
+      // That's different from restaurant/cafe/takeaway/hatted, where a
+      // themed ethnic restaurant with no English cuisine word in its name
+      // (e.g. "Al Aseel") is common and shouldn't be excluded. So: require
+      // an explicit cuisine-word match for pub/club results specifically,
+      // and keep the lighter conflict-only exclusion everywhere else.
+      const requireExplicitMatch = category === "pub" || category === "club";
+
       results = results.filter((r) => {
         const text = r.name.toLowerCase();
-        if (GENERIC_VENUE_TYPES.some((v) => text.includes(v))) return false;
         if (text.includes(requested)) return true;
+        if (requireExplicitMatch) return false; // no cuisine word found, and this category needs one
         const conflictsWithOther = KNOWN_CUISINES.some((c) => c !== requested && text.includes(c));
         return !conflictsWithOther;
       });
