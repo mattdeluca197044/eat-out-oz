@@ -112,7 +112,8 @@ export default async function handler(req, res) {
     category === "cafe" ? "cafes" :
     category === "takeaway" ? "takeaway food" :
     category === "pub" ? "pub restaurants" :
-    category === "hatted" ? "hatted fine dining restaurant" :
+    category === "club" ? "licensed club" :
+    category === "hatted" ? "award winning fine dining restaurant" :
     "restaurants";
 
   const cuisinePrefix = cuisine && cuisine.trim() ? `${cuisine.trim().slice(0, 40)} ` : "";
@@ -195,16 +196,47 @@ export default async function handler(req, res) {
 
     if (cuisine && cuisine.trim()) {
       const requested = cuisine.trim().toLowerCase();
-      const KNOWN_CUISINES = [
-        "italian","thai","chinese","japanese","indian","mexican","vietnamese",
-        "korean","lebanese","greek","seafood","vegan","pizza","burger",
-        "french","spanish","turkish","malaysian","indonesian","american",
-      ];
+
+      // Google's legacy Places Text Search doesn't return a reliable
+      // cuisine field — the only signal available is the business's name
+      // text. The previous approach kept a result unless its name
+      // mentioned a *different* cuisine, which meant any generically-named
+      // place (no cuisine word at all) slipped through unfiltered — that
+      // was the cause of unrelated results showing up in, e.g., a
+      // "Lebanese" search. This requires a positive match instead: the
+      // name has to actually contain the requested cuisine or a synonym.
+      // Trade-off: a genuinely-Lebanese restaurant with a name that
+      // doesn't mention "Lebanese" (e.g. a proper-noun name) may now be
+      // missed — but that's a much better failure mode than showing
+      // unrelated restaurants under the wrong cuisine.
+      const CUISINE_SYNONYMS = {
+        italian: ["italian", "pizzeria", "trattoria", "osteria", "ristorante"],
+        thai: ["thai"],
+        chinese: ["chinese", "cantonese", "szechuan", "sichuan", "dim sum"],
+        japanese: ["japanese", "sushi", "ramen", "izakaya", "yakitori", "teppanyaki"],
+        indian: ["indian", "tandoori", "punjabi", "curry"],
+        mexican: ["mexican", "taqueria", "cantina"],
+        vietnamese: ["vietnamese", "pho", "banh mi"],
+        korean: ["korean", "k-bbq", "kbbq"],
+        lebanese: ["lebanese", "lebnani", "levantine"],
+        greek: ["greek", "souvlaki", "taverna"],
+        "modern australian": ["modern australian"],
+        seafood: ["seafood", "fish market", "oyster"],
+        vegan: ["vegan", "plant based", "plant-based"],
+        pizza: ["pizza", "pizzeria"],
+        burger: ["burger"],
+        french: ["french", "brasserie", "bistro"],
+        spanish: ["spanish", "tapas"],
+        turkish: ["turkish", "kebab"],
+        malaysian: ["malaysian", "malaysia"],
+        indonesian: ["indonesian", "indonesia"],
+        american: ["american", "diner"],
+      };
+      const synonyms = CUISINE_SYNONYMS[requested] || [requested];
+
       results = results.filter((r) => {
         const text = r.name.toLowerCase();
-        if (text.includes(requested)) return true;
-        const conflictsWithOther = KNOWN_CUISINES.some((c) => c !== requested && text.includes(c));
-        return !conflictsWithOther;
+        return synonyms.some((s) => text.includes(s));
       });
     }
 
