@@ -326,9 +326,23 @@ export default async function handler(req, res) {
       // and keep the lighter conflict-only exclusion everywhere else.
       const requireExplicitMatch = category === "pub" || category === "club";
 
+      // Generic Western multi-purpose dining branding — a themed ethnic
+      // restaurant essentially never names itself this way (confirmed:
+      // "Willo Restaurant & Bar" and "Ruse Bar and Brasserie" both fit this
+      // pattern and are known-wrong for a Lebanese search). Applied
+      // regardless of category, since the naming pattern itself is the
+      // signal, not which category Google happened to file it under.
+      const GENERIC_DINING_PHRASES = [
+        "restaurant & bar", "restaurant and bar",
+        "bar & grill", "bar and grill",
+        "bar & bistro", "bar and bistro",
+        "brasserie",
+      ];
+
       results = results.filter((r) => {
         const text = r.name.toLowerCase();
         if (text.includes(requested)) return true;
+        if (GENERIC_DINING_PHRASES.some((p) => text.includes(p))) return false;
         if (requireExplicitMatch) return false; // no cuisine word found, and this category needs one
         const conflictsWithOther = KNOWN_CUISINES.some((c) => c !== requested && text.includes(c));
         return !conflictsWithOther;
