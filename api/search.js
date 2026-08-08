@@ -45,6 +45,43 @@ async function checkRateLimit(sql, key, maxRequests, windowSeconds) {
   return true;
 }
 
+// State name + a fallback "centre point" (capital city) used only when the
+// visitor's own coordinates aren't available (e.g. local dev, or a rare
+// request with no geo headers at all).
+const STATE_INFO = {
+  NSW: { name: "New South Wales", lat: -33.8688, lng: 151.2093 },
+  VIC: { name: "Victoria", lat: -37.8136, lng: 144.9631 },
+  QLD: { name: "Queensland", lat: -27.4698, lng: 153.0251 },
+  WA:  { name: "Western Australia", lat: -31.9505, lng: 115.8605 },
+  SA:  { name: "South Australia", lat: -34.9285, lng: 138.6007 },
+  TAS: { name: "Tasmania", lat: -42.8821, lng: 147.3272 },
+  ACT: { name: "Australian Capital Territory", lat: -35.2809, lng: 149.1300 },
+  NT:  { name: "Northern Territory", lat: -12.4634, lng: 130.8456 },
+};
+const DEFAULT_STATE = "NSW"; // used when we truly have no geo signal at all
+
+// Vercel automatically attaches geolocation headers (derived from the
+// visitor's IP) to every request in production — no browser permission
+// prompt needed, and no extra API call. These are absent when running
+// locally, so we fall back to a sensible default in that case.
+function getVisitorLocation(req) {
+  const country = req.headers["x-vercel-ip-country"];
+  const regionCode = (req.headers["x-vercel-ip-country-region"] || "").toUpperCase();
+  const headerLat = parseFloat(req.headers["x-vercel-ip-latitude"]);
+  const headerLng = parseFloat(req.headers["x-vercel-ip-longitude"]);
+
+  const stateCode = (country === "AU" && STATE_INFO[regionCode]) ? regionCode : DEFAULT_STATE;
+  const state = STATE_INFO[stateCode];
+
+  const hasPreciseCoords = Number.isFinite(headerLat) && Number.isFinite(headerLng);
+  return {
+    stateCode,
+    stateName: state.name,
+    lat: hasPreciseCoords ? headerLat : state.lat,
+    lng: hasPreciseCoords ? headerLng : state.lng,
+  };
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -79,8 +116,25 @@ export default async function handler(req, res) {
     "restaurants";
 
   const cuisinePrefix = cuisine && cuisine.trim() ? `${cuisine.trim().slice(0, 40)} ` : "";
-  const query = `${cuisinePrefix}${categoryTerm} in ${suburb}, Sydney`;
-  const baseUrl = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`;
+
+  // Detect which Australian state the visitor is in, and search relative to
+  // that instead of a hardcoded "Sydney" — this was the source of
+  // out-of-country / wrong-city results for visitors elsewhere in Australia.
+  const visitor = getVisitorLocation(req);
+  const query = `${cuisinePrefix}${categoryTerm} in ${suburb}, ${visitor.stateName}, Australia`;
+
+  // location + radius bias the results toward the visitor's state; region=au
+  // additionally biases toward the .au ccTLD. Neither strictly filters (Text
+  // Search doesn't support a hard country filter), but combined they push
+  // results firmly toward the right country and state.
+  const STATE_RADIUS_METERS = 250000; // ~250km, wide enough to cover a state's populated area without being so wide it stops helping
+  const baseUrl =
+    `https://maps.googleapis.com/maps/api/place/textsearch/json` +
+    `?query=${encodeURIComponent(query)}` +
+    `&location=${visitor.lat},${visitor.lng}` +
+    `&radius=${STATE_RADIUS_METERS}` +
+    `&region=au` +
+    `&key=${key}`;
 
   const wantFull = req.query.full === "1";
   const MAX_PAGES = wantFull ? 3 : 2;
@@ -113,27 +167,33 @@ export default async function handler(req, res) {
     } while (nextPageToken && page < MAX_PAGES);
 
     function extractSuburb(address) {
-  if (!address) return null;
-  // Australian addresses from Google typically look like:
-  // "294 King St, Newtown NSW 2042, Australia"
-  const match = address.match(/,\s*([A-Za-z\s'-]+?)\s+(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\s+\d{4}/);
-  return match ? match[1].trim() : null;
-}
+      if (!address) return null;
+      // Australian addresses from Google typically look like:
+      // "294 King St, Newtown NSW 2042, Australia"
+      const match = address.match(/,\s*([A-Za-z\s'-]+?)\s+(NSW|VIC|QLD|WA|SA|TAS|ACT|NT)\s+\d{4}/);
+      return match ? match[1].trim() : null;
+    }
 
-let results = allResults.map((place) => ({
-      name: place.name,
-      address: place.formatted_address,
-      suburb: extractSuburb(place.formatted_address),
-      rating: place.rating ?? null,
-      reviews: place.user_ratings_total ?? 0,
-      priceLevel: place.price_level ?? null,
-      placeId: place.place_id,
-      lat: place.geometry?.location?.lat ?? null,
-      lng: place.geometry?.location?.lng ?? null,
-      openNow: place.opening_hours?.open_now ?? null,
-      types: place.types || [],
-      cuisine: cuisine && cuisine.trim() ? cuisine.trim() : null,
-    }));
+    // Belt-and-braces filter: drop any result whose formatted_address doesn't
+    // end in "Australia" at all. location/radius bias makes these rare, but
+    // Text Search can still occasionally surface an unrelated overseas match
+    // for an ambiguous suburb name — this catches anything that slips through.
+    let results = allResults
+      .filter((place) => (place.formatted_address || "").includes("Australia"))
+      .map((place) => ({
+        name: place.name,
+        address: place.formatted_address,
+        suburb: extractSuburb(place.formatted_address),
+        rating: place.rating ?? null,
+        reviews: place.user_ratings_total ?? 0,
+        priceLevel: place.price_level ?? null,
+        placeId: place.place_id,
+        lat: place.geometry?.location?.lat ?? null,
+        lng: place.geometry?.location?.lng ?? null,
+        openNow: place.opening_hours?.open_now ?? null,
+        types: place.types || [],
+        cuisine: cuisine && cuisine.trim() ? cuisine.trim() : null,
+      }));
 
     if (cuisine && cuisine.trim()) {
       const requested = cuisine.trim().toLowerCase();
@@ -151,8 +211,14 @@ let results = allResults.map((place) => ({
     }
 
     res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
-    return res.status(200).json({ query, count: results.length, results });
+    return res.status(200).json({
+      query,
+      detectedState: visitor.stateCode,
+      count: results.length,
+      results,
+    });
   } catch (err) {
-    return res.status(500).json({ error: "Upstream fetch failed", detail: err.message });
+    console.error("search error:", err); // keep detail server-side only
+    return res.status(500).json({ error: "Upstream fetch failed" });
   }
 }
