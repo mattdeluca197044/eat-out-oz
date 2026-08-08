@@ -1,5 +1,3 @@
-
-}
 // GET /api/search?suburb=Newtown&category=restaurant
 
 import { neon } from "@neondatabase/serverless";
