@@ -153,28 +153,46 @@ export default async function handler(req, res) {
   // Deliberately NOT using "in {place}, Australia" phrasing — Google's Text
   // Search doesn't require that grammar, and forcing it breaks the query
   // whenever the typed term isn't a resolvable place (a business name like
-  // "Al Alseel", a typo'd suburb, etc. — same failure mode as the earlier
+  // "Al Aseel", a typo'd suburb, etc. — same failure mode as the earlier
   // "Manly, Victoria" bug, just triggered differently). Plain free-text
   // concatenation lets Google's own matching work against names, addresses,
   // and types alike, so it handles a suburb, a cuisine, or a business name
   // typed into the same search box.
-  const query = cleanedSuburb
+  const fullQuery = cleanedSuburb
     ? `${cuisinePrefix}${categoryTerm} ${cleanedSuburb} Australia`
     : `${cuisinePrefix}${categoryTerm} Australia`;
+  // Fallback used only if the full query above comes back completely empty.
+  // Google's Text Search can fail to match anything when a query combines
+  // too many distinct entities at once — cuisine + business name + suburb
+  // together (confirmed in testing: "Lebanese restaurants al aseel
+  // parramatta Australia" → zero results, even though dropping either the
+  // cuisine word or the suburb individually finds the place fine). Rather
+  // than trying to predict when that'll happen, retry once without the
+  // cuisine word if the richer query finds nothing.
+  const fallbackQuery = cleanedSuburb
+    ? `${categoryTerm} ${cleanedSuburb} Australia`
+    : `${categoryTerm} Australia`;
 
   const LOCATION_BIAS_RADIUS_METERS = 100000; // ~100km — metro-scale bias, not a hard boundary
-  const baseUrl =
-    `https://maps.googleapis.com/maps/api/place/textsearch/json` +
-    `?query=${encodeURIComponent(query)}` +
-    `&location=${visitor.lat},${visitor.lng}` +
-    `&radius=${LOCATION_BIAS_RADIUS_METERS}` +
-    `&key=${key}`;
+  function buildUrl(queryText) {
+    return (
+      `https://maps.googleapis.com/maps/api/place/textsearch/json` +
+      `?query=${encodeURIComponent(queryText)}` +
+      `&location=${visitor.lat},${visitor.lng}` +
+      `&radius=${LOCATION_BIAS_RADIUS_METERS}` +
+      `&key=${key}`
+    );
+  }
 
   const wantFull = req.query.full === "1";
   const MAX_PAGES = wantFull ? 3 : 2;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  try {
+  // Runs the paginated fetch loop against a given query, returning either
+  // the collected results or an upstream-error response to send straight
+  // back to the client.
+  async function fetchAllPages(queryText) {
+    const baseUrl = buildUrl(queryText);
     let allResults = [];
     let nextPageToken = null;
     let page = 0;
@@ -188,7 +206,7 @@ export default async function handler(req, res) {
 
       if (data.status !== "OK" && data.status !== "ZERO_RESULTS") {
         if (allResults.length) break;
-        return res.status(502).json({ error: "Places API error", status: data.status, message: data.error_message });
+        return { allResults: null, errorStatus: data.status, errorMessage: data.error_message };
       }
 
       const pageResults = data.results || [];
@@ -199,6 +217,26 @@ export default async function handler(req, res) {
       nextPageToken = pageWasFull ? (data.next_page_token || null) : null;
       if (!wantFull && page >= 2) break;
     } while (nextPageToken && page < MAX_PAGES);
+
+    return { allResults, errorStatus: null, errorMessage: null };
+  }
+
+  try {
+    let { allResults, errorStatus, errorMessage } = await fetchAllPages(fullQuery);
+    if (errorStatus) {
+      return res.status(502).json({ error: "Places API error", status: errorStatus, message: errorMessage });
+    }
+
+    // The richer query (with cuisine) found nothing at all — retry once
+    // without the cuisine word before giving up. Only kicks in when a
+    // cuisine was actually specified and the first attempt was genuinely
+    // empty, so it doesn't add latency to the common case.
+    if (allResults.length === 0 && cuisinePrefix) {
+      const fallback = await fetchAllPages(fallbackQuery);
+      if (!fallback.errorStatus) {
+        allResults = fallback.allResults;
+      }
+    }
 
     function extractSuburbAndState(address) {
       if (!address) return { suburb: null, state: null };
@@ -285,7 +323,7 @@ export default async function handler(req, res) {
 
     res.setHeader("Cache-Control", "s-maxage=3600, stale-while-revalidate=86400");
     return res.status(200).json({
-      query,
+      query: fullQuery,
       detectedState: visitor.stateCode,
       count: results.length,
       results,
