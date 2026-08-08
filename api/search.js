@@ -313,8 +313,20 @@ export default async function handler(req, res) {
         "korean", "lebanese", "greek", "seafood", "vegan", "pizza", "burger",
         "french", "spanish", "turkish", "malaysian", "indonesian", "american",
       ];
+      // Generic venue types Google's loose text relevance sometimes pulls
+      // into a cuisine-filtered search (e.g. a leagues club showing up for
+      // "Lebanese restaurants ... Parramatta") even though they're a venue
+      // category, not a themed cuisine restaurant. This is a safe exclusion
+      // to add on top of the cuisine check above — it can't accidentally
+      // exclude a genuine ethnic restaurant, since none of these phrases
+      // describe a style of cuisine.
+      const GENERIC_VENUE_TYPES = [
+        "leagues club", "rsl", "bowling club", "golf club", "sports club",
+        "workers club", "services club",
+      ];
       results = results.filter((r) => {
         const text = r.name.toLowerCase();
+        if (GENERIC_VENUE_TYPES.some((v) => text.includes(v))) return false;
         if (text.includes(requested)) return true;
         const conflictsWithOther = KNOWN_CUISINES.some((c) => c !== requested && text.includes(c));
         return !conflictsWithOther;
