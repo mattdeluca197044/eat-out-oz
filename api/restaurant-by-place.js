@@ -31,7 +31,7 @@ export default async function handler(req, res) {
     const rows = await sql`
       SELECT id, place_id, description, instagram_url, facebook_url, website_url, current_special, photos
       FROM restaurants
-      WHERE place_id = ANY(${ids}) AND subscription_status = 'active'
+      WHERE place_id = ANY(${ids}) AND subscription_status = 'active' AND verification_status = 'approved'
     `;
     const matches = {};
     rows.forEach((r) => {
