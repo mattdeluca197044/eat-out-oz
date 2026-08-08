@@ -1,10 +1,10 @@
-// POST /api/update-profile
+// POST /api/update-place-id
 // Headers: Authorization: Bearer <token>
-// Body: { description, instagramUrl, facebookUrl, websiteUrl }
-// Only works for restaurants with an active subscription.
-
+// Body: { placeId }
+// Links this restaurant account to a Google Place ID. Deliberately does NOT
+// require an active subscription — a restaurant should be able to link
+// their listing while setting up their account, before deciding to pay.
 import { neon } from "@neondatabase/serverless";
-
 const ALLOWED_ORIGINS = [
   "https://outtoeat.com.au",
   "https://www.outtoeat.com.au",
@@ -14,7 +14,6 @@ const ALLOWED_ORIGINS = [
   "https://dine-out-app.vercel.app",
   "https://restaurant-portal-seven.vercel.app",
 ];
-
 function setCors(req, res) {
   const origin = req.headers.origin;
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
@@ -25,15 +24,10 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-function isValidUrl(u) {
-  if (!u) return true; // empty is fine, it's optional
-  try {
-    const parsed = new URL(u);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
+// Google Place IDs are alphanumeric plus "-" and "_", typically 25-30+
+// characters. This is a loose sanity check, not a guarantee the ID is a
+// real, existing place — Google itself is the source of truth for that.
+const PLACE_ID_RE = /^[A-Za-z0-9_-]{10,255}$/;
 
 export default async function handler(req, res) {
   setCors(req, res);
@@ -46,43 +40,39 @@ export default async function handler(req, res) {
   }
   const token = authHeader.slice(7);
 
-  const { description, instagramUrl, facebookUrl, websiteUrl } = req.body || {};
-
-  if (description && description.length > 1000) {
-    return res.status(400).json({ error: "Description is too long (max 1000 characters)" });
+  const { placeId } = req.body || {};
+  if (!placeId || typeof placeId !== "string" || !PLACE_ID_RE.test(placeId.trim())) {
+    return res.status(400).json({ error: "Please enter a valid Google Places ID." });
   }
-  for (const [label, url] of [["Instagram", instagramUrl], ["Facebook", facebookUrl], ["Website", websiteUrl]]) {
-    if (url && !isValidUrl(url)) {
-      return res.status(400).json({ error: `${label} link doesn't look like a valid URL` });
-    }
-  }
+  const cleanPlaceId = placeId.trim();
 
   const sql = neon(process.env.DATABASE_URL);
-
   try {
     const sessionRows = await sql`
-      SELECT r.id, r.subscription_status FROM sessions s
+      SELECT r.id FROM sessions s
       JOIN restaurants r ON r.id = s.restaurant_id
       WHERE s.token = ${token} AND s.expires_at > now()
     `;
     const restaurant = sessionRows[0];
     if (!restaurant) return res.status(401).json({ error: "Session expired, please log in again" });
 
-    if (restaurant.subscription_status !== "active") {
-      return res.status(402).json({ error: "An active subscription is required to edit your profile." });
+    // Prevent two different accounts from linking the same listing — that
+    // would make restaurant-by-place.js's match ambiguous (two rows for one
+    // place_id), and could let one account see/edit data meant for another
+    // business's claimed listing.
+    const existingClaim = await sql`
+      SELECT id FROM restaurants WHERE place_id = ${cleanPlaceId} AND id != ${restaurant.id}
+    `;
+    if (existingClaim.length) {
+      return res.status(409).json({ error: "This listing has already been claimed by another account." });
     }
 
     await sql`
-      UPDATE restaurants
-      SET description = ${description || null},
-          instagram_url = ${instagramUrl || null},
-          facebook_url = ${facebookUrl || null},
-          website_url = ${websiteUrl || null}
-      WHERE id = ${restaurant.id}
+      UPDATE restaurants SET place_id = ${cleanPlaceId} WHERE id = ${restaurant.id}
     `;
-
-    return res.status(200).json({ success: true });
+    return res.status(200).json({ success: true, placeId: cleanPlaceId });
   } catch (err) {
-    return res.status(500).json({ error: "Update failed", detail: err.message });
+    console.error("update-place-id error:", err); // keep detail server-side only
+    return res.status(500).json({ error: "Update failed" });
   }
 }
