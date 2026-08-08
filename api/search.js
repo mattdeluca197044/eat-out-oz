@@ -1,3 +1,5 @@
+
+}
 // GET /api/search?suburb=Newtown&category=restaurant
 
 import { neon } from "@neondatabase/serverless";
@@ -150,14 +152,17 @@ export default async function handler(req, res) {
   // anchors near the visitor instead of spanning the whole country.
   const visitor = getVisitorLocation(req);
   const cleanedSuburb = stripCuisineFromSuburb(suburb, cuisine);
-  // If stripping the cuisine word leaves nothing (e.g. the search box only
-  // had "lebanese" typed in it, no suburb at all), don't bake an empty or
-  // nonsense location into the query — fall back to a bare category+cuisine
-  // search, relying on the location/radius bias below to keep it anchored
-  // near the visitor instead of resolving to nothing.
+  // Deliberately NOT using "in {place}, Australia" phrasing — Google's Text
+  // Search doesn't require that grammar, and forcing it breaks the query
+  // whenever the typed term isn't a resolvable place (a business name like
+  // "Al Alseel", a typo'd suburb, etc. — same failure mode as the earlier
+  // "Manly, Victoria" bug, just triggered differently). Plain free-text
+  // concatenation lets Google's own matching work against names, addresses,
+  // and types alike, so it handles a suburb, a cuisine, or a business name
+  // typed into the same search box.
   const query = cleanedSuburb
-    ? `${cuisinePrefix}${categoryTerm} in ${cleanedSuburb}, Australia`
-    : `${cuisinePrefix}${categoryTerm} in Australia`;
+    ? `${cuisinePrefix}${categoryTerm} ${cleanedSuburb} Australia`
+    : `${cuisinePrefix}${categoryTerm} Australia`;
 
   const LOCATION_BIAS_RADIUS_METERS = 100000; // ~100km — metro-scale bias, not a hard boundary
   const baseUrl =
