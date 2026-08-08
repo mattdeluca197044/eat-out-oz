@@ -66,6 +66,7 @@ export default async function handler(req, res) {
       SELECT id, name, place_id, current_special, description, photos
       FROM restaurants
       WHERE subscription_status = 'active'
+        AND verification_status = 'approved'
         AND current_special IS NOT NULL
         AND current_special != ''
       ORDER BY id DESC
