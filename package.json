@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Serverless proxy for Google Places API and restaurant booking system",
   "dependencies": {
-    "@neondatabase/serverless": "^0.10.0"
+    "@neondatabase/serverless": "^0.10.0",
+    "@vercel/blob": "^2.7.0"
   }
 }
