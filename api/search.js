@@ -102,12 +102,15 @@ export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  const { suburb, category, cuisine } = req.query;
+  const { suburb, category, cuisine, state } = req.query;
 
-  if (!suburb || !suburb.trim()) {
-    return res.status(400).json({ error: "Missing 'suburb' query parameter" });
+  const suburbTrimmed = (suburb || "").trim();
+  const stateTrimmed = (state || "").trim().toUpperCase();
+
+  if (!suburbTrimmed && !stateTrimmed) {
+    return res.status(400).json({ error: "Provide a suburb or select a state" });
   }
-  if (suburb.length > 100) {
+  if (suburb && suburb.length > 100) {
     return res.status(400).json({ error: "Suburb name too long" });
   }
 
@@ -149,7 +152,19 @@ export default async function handler(req, res) {
   // names. With a location bias, that same unresolvable query still
   // anchors near the visitor instead of spanning the whole country.
   const visitor = getVisitorLocation(req);
-  const cleanedSuburb = stripCuisineFromSuburb(suburb, cuisine);
+  const cleanedSuburb = stripCuisineFromSuburb(suburbTrimmed, cuisine);
+
+  // A user-selected state (from the frontend's state dropdown) is safe to
+  // bake into the query text — unlike the earlier auto-detected visitor
+  // state, this is a deliberate choice, so it can't mismatch the suburb
+  // the way "Manly, Victoria" did (an auto-guess that happened to be
+  // wrong). If no suburb was typed at all, the state alone still gives
+  // Google a real, resolvable location to search within.
+  const stateFullName = STATE_INFO[stateTrimmed]?.name || null;
+  const locationPart = cleanedSuburb && stateFullName
+    ? `${cleanedSuburb}, ${stateFullName}`
+    : cleanedSuburb || stateFullName || "";
+
   // Deliberately NOT using "in {place}, Australia" phrasing — Google's Text
   // Search doesn't require that grammar, and forcing it breaks the query
   // whenever the typed term isn't a resolvable place (a business name like
@@ -158,8 +173,8 @@ export default async function handler(req, res) {
   // concatenation lets Google's own matching work against names, addresses,
   // and types alike, so it handles a suburb, a cuisine, or a business name
   // typed into the same search box.
-  const fullQuery = cleanedSuburb
-    ? `${cuisinePrefix}${categoryTerm} ${cleanedSuburb} Australia`
+  const fullQuery = locationPart
+    ? `${cuisinePrefix}${categoryTerm} ${locationPart} Australia`
     : `${cuisinePrefix}${categoryTerm} Australia`;
   // Fallback used only if the full query above comes back completely empty.
   // Google's Text Search can fail to match anything when a query combines
@@ -169,8 +184,8 @@ export default async function handler(req, res) {
   // cuisine word or the suburb individually finds the place fine). Rather
   // than trying to predict when that'll happen, retry once without the
   // cuisine word if the richer query finds nothing.
-  const fallbackQuery = cleanedSuburb
-    ? `${categoryTerm} ${cleanedSuburb} Australia`
+  const fallbackQuery = locationPart
+    ? `${categoryTerm} ${locationPart} Australia`
     : `${categoryTerm} Australia`;
 
   const LOCATION_BIAS_RADIUS_METERS = 100000; // ~100km — metro-scale bias, not a hard boundary
