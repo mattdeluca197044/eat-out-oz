@@ -271,22 +271,14 @@ export default async function handler(req, res) {
         };
       });
 
-    // Some Australian suburb names exist in more than one state (Richmond,
-    // Brighton, Windsor, etc.). Without a location bias in the Google query
-    // (removed earlier — it caused unrelated zero-result failures), a
-    // search can return matches from several states at once. Rather than
-    // biasing the Google request itself again, disambiguate the response:
-    // only if the results actually span more than one state AND the
-    // visitor's own state is among them, narrow down to their state — this
-    // assumes an ambiguous shared suburb name most likely means the
-    // visitor's home state. If every result is from a single state (a
-    // suburb that only exists in one place, e.g. an interstate search),
-    // nothing is filtered, so genuine national/interstate searches are
-    // unaffected.
-    const statesPresent = new Set(results.map((r) => r.state).filter(Boolean));
-    if (statesPresent.size > 1 && statesPresent.has(visitor.stateCode)) {
-      results = results.filter((r) => !r.state || r.state === visitor.stateCode);
-    }
+    // Note: previously this filtered multi-state results down to just the
+    // visitor's own state, to disambiguate a shared suburb name (Richmond,
+    // Brighton, etc. exist in several states). That's now handled better
+    // by the frontend's location picker — showing every matching branch
+    // and letting the person choose — rather than silently hiding a
+    // genuine other-state location (e.g. a national chain's Melbourne
+    // branch showing up alongside its Sydney one). Removing the filter
+    // here so the frontend actually has all the branches to choose from.
 
     if (cuisine && cuisine.trim()) {
       const requested = cuisine.trim().toLowerCase();
