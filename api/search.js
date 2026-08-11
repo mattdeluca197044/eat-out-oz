@@ -123,6 +123,69 @@ function buildOccasionPrefix(occasionParam) {
   return `${phrases.join(" ")} `;
 }
 
+function parseOccasionKeys(occasionParam) {
+  if (!occasionParam || !occasionParam.trim()) return [];
+  return occasionParam
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+// Known real waterline points around Sydney (harbour edges, ocean
+// beaches, and the Parramatta River) — not suburb centres. A suburb like
+// Manly or Cronulla extends several blocks inland, so searching "within
+// Manly" alone doesn't guarantee a result is actually near the water; a
+// result's own lat/lng needs to be checked against a real point ON the
+// water for that to be true.
+const WATERLINE_POINTS = [
+  { name: "Circular Quay", lat: -33.8613, lng: 151.2108 },
+  { name: "Barangaroo", lat: -33.8606, lng: 151.2015 },
+  { name: "Walsh Bay", lat: -33.8564, lng: 151.2007 },
+  { name: "Darling Harbour", lat: -33.8698, lng: 151.1994 },
+  { name: "Woolloomooloo", lat: -33.8697, lng: 151.2219 },
+  { name: "Milsons Point", lat: -33.8467, lng: 151.2107 },
+  { name: "Kirribilli", lat: -33.8497, lng: 151.2144 },
+  { name: "Cremorne Point", lat: -33.8384, lng: 151.2265 },
+  { name: "Neutral Bay", lat: -33.8330, lng: 151.2200 },
+  { name: "Balmoral Beach", lat: -33.8244, lng: 151.2515 },
+  { name: "Double Bay", lat: -33.8770, lng: 151.2427 },
+  { name: "Rose Bay", lat: -33.8698, lng: 151.2687 },
+  { name: "Watsons Bay", lat: -33.8398, lng: 151.2822 },
+  { name: "Manly Cove", lat: -33.7999, lng: 151.2789 },
+  { name: "Manly Beach", lat: -33.7969, lng: 151.2887 },
+  { name: "Bondi Beach", lat: -33.8908, lng: 151.2743 },
+  { name: "Coogee Beach", lat: -33.9199, lng: 151.2578 },
+  { name: "Balmain", lat: -33.8577, lng: 151.1799 },
+  { name: "Cronulla", lat: -34.0575, lng: 151.1522 },
+  { name: "Parramatta River", lat: -33.8151, lng: 151.0011 },
+];
+
+const WATER_MAX_DISTANCE_METERS = 500;
+
+// Standard haversine great-circle distance between two lat/lng points, in
+// metres — accurate enough at this scale (we're comparing distances of a
+// few hundred metres to a few kilometres, not doing surveying).
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function nearestWaterlineDistance(lat, lng) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return Infinity;
+  let min = Infinity;
+  for (const p of WATERLINE_POINTS) {
+    const d = distanceMeters(lat, lng, p.lat, p.lng);
+    if (d < min) min = d;
+  }
+  return min;
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
@@ -396,6 +459,18 @@ export default async function handler(req, res) {
         const conflictsWithOther = KNOWN_CUISINES.some((c) => c !== requested && text.includes(c));
         return !conflictsWithOther;
       });
+    }
+
+    const occasionKeys = parseOccasionKeys(occasion);
+
+    // "Near the water" should mean genuinely near the water, not just
+    // "somewhere in a suburb that happens to border water" — a suburb
+    // like Manly or Cronulla extends well inland. Each result already
+    // carries its own lat/lng from Google, so we check that directly
+    // against a set of real waterline points rather than trusting the
+    // suburb name alone.
+    if (occasionKeys.includes("water")) {
+      results = results.filter((r) => nearestWaterlineDistance(r.lat, r.lng) <= WATER_MAX_DISTANCE_METERS);
     }
 
     // Shortened while actively iterating on search logic — a long cache
