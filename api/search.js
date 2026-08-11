@@ -1,4 +1,4 @@
-// GET /api/search?suburb=Newtown&category=restaurant
+// GET /api/search?suburb=Newtown&category=restaurant&occasion=date-night
 
 import { neon } from "@neondatabase/serverless";
 
@@ -98,11 +98,36 @@ function stripCuisineFromSuburb(suburbText, cuisineText) {
   return suburbText.replace(re, "").replace(/\s+/g, " ").trim();
 }
 
+// Maps a small set of "occasion / vibe" search terms the frontend can send
+// (as a comma-separated ?occasion= param, e.g. "date-night,water") into
+// real descriptive phrases baked into the Google query text — the same
+// technique already used for `cuisinePrefix` below. We don't have our own
+// restaurant descriptions to match against (results come straight from
+// Google Places, not our own DB), so instead we lean on Google's own
+// search relevance, which does index business names, types, and review
+// text against phrases like these.
+const OCCASION_KEYWORDS = {
+  "date-night": "romantic date night",
+  "special-occasion": "special occasion fine dining celebration",
+  "water": "waterfront harbourside ocean view",
+};
+
+function buildOccasionPrefix(occasionParam) {
+  if (!occasionParam || !occasionParam.trim()) return "";
+  const keys = occasionParam
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+  const phrases = keys.map((k) => OCCASION_KEYWORDS[k]).filter(Boolean);
+  if (!phrases.length) return "";
+  return `${phrases.join(" ")} `;
+}
+
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
 
-  const { suburb, category, cuisine, state } = req.query;
+  const { suburb, category, cuisine, state, occasion } = req.query;
 
   const suburbTrimmed = (suburb || "").trim();
   const stateTrimmed = (state || "").trim().toUpperCase();
@@ -112,6 +137,9 @@ export default async function handler(req, res) {
   }
   if (suburb && suburb.length > 100) {
     return res.status(400).json({ error: "Suburb name too long" });
+  }
+  if (occasion && occasion.length > 100) {
+    return res.status(400).json({ error: "Occasion parameter too long" });
   }
 
   const key = process.env.GOOGLE_PLACES_API_KEY;
@@ -136,6 +164,7 @@ export default async function handler(req, res) {
     "restaurants";
 
   const cuisinePrefix = cuisine && cuisine.trim() ? `${cuisine.trim().slice(0, 40)} ` : "";
+  const occasionPrefix = buildOccasionPrefix(occasion);
 
   // Detect which Australian state the visitor is in. The query TEXT itself
   // never includes a hardcoded state name — that was tried previously and
@@ -174,17 +203,21 @@ export default async function handler(req, res) {
   // and types alike, so it handles a suburb, a cuisine, or a business name
   // typed into the same search box.
   const fullQuery = locationPart
-    ? `${cuisinePrefix}${categoryTerm} ${locationPart} Australia`
-    : `${cuisinePrefix}${categoryTerm} Australia`;
-  // Fallback used only if the full query above comes back completely empty.
-  // Google's Text Search can fail to match anything when a query combines
-  // too many distinct entities at once — cuisine + business name + suburb
-  // together (confirmed in testing: "Lebanese restaurants al aseel
-  // parramatta Australia" → zero results, even though dropping either the
-  // cuisine word or the suburb individually finds the place fine). Rather
-  // than trying to predict when that'll happen, retry once without the
-  // cuisine word if the richer query finds nothing.
+    ? `${cuisinePrefix}${occasionPrefix}${categoryTerm} ${locationPart} Australia`
+    : `${cuisinePrefix}${occasionPrefix}${categoryTerm} Australia`;
+
+  // Fallback 1: drop the cuisine word but keep the occasion phrase. Google's
+  // Text Search can fail to match anything when a query combines too many
+  // distinct entities at once (cuisine + occasion + suburb all together).
   const fallbackQuery = locationPart
+    ? `${occasionPrefix}${categoryTerm} ${locationPart} Australia`
+    : `${occasionPrefix}${categoryTerm} Australia`;
+
+  // Fallback 2: if that's still empty, drop the occasion phrase too and
+  // fall back to the plain category + location search, so an occasion
+  // filter can never turn a normally-successful search into a dead end —
+  // worst case, it just stops narrowing results.
+  const bareFallbackQuery = locationPart
     ? `${categoryTerm} ${locationPart} Australia`
     : `${categoryTerm} Australia`;
 
@@ -242,14 +275,23 @@ export default async function handler(req, res) {
       return res.status(502).json({ error: "Places API error", status: errorStatus, message: errorMessage });
     }
 
-    // The richer query (with cuisine) found nothing at all — retry once
-    // without the cuisine word before giving up. Only kicks in when a
-    // cuisine was actually specified and the first attempt was genuinely
-    // empty, so it doesn't add latency to the common case.
+    // The richer query (with cuisine and/or occasion) found nothing at
+    // all — retry once without the cuisine word before giving up. Only
+    // kicks in when a cuisine was actually specified and the first attempt
+    // was genuinely empty, so it doesn't add latency to the common case.
     if (allResults.length === 0 && cuisinePrefix) {
       const fallback = await fetchAllPages(fallbackQuery);
       if (!fallback.errorStatus) {
         allResults = fallback.allResults;
+      }
+    }
+
+    // Still nothing, and an occasion phrase was in the mix — drop it too
+    // and fall back to the plain category + location search.
+    if (allResults.length === 0 && occasionPrefix) {
+      const bareFallback = await fetchAllPages(bareFallbackQuery);
+      if (!bareFallback.errorStatus) {
+        allResults = bareFallback.allResults;
       }
     }
 
@@ -366,6 +408,7 @@ export default async function handler(req, res) {
     return res.status(200).json({
       query: fullQuery,
       detectedState: visitor.stateCode,
+      occasion: occasion || null,
       count: results.length,
       results,
     });
