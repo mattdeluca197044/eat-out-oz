@@ -1,5 +1,7 @@
 // GET /api/restaurant-by-place?placeIds=ChIJ...,ChIJ...
+
 import { neon } from "@neondatabase/serverless";
+
 const ALLOWED_ORIGINS = [
   "https://outtoeat.com.au",
   "https://www.outtoeat.com.au",
@@ -9,6 +11,7 @@ const ALLOWED_ORIGINS = [
   "https://dine-out-app.vercel.app",
   "https://restaurant-portal-seven.vercel.app",
 ];
+
 function setCors(req, res) {
   const origin = req.headers.origin;
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
@@ -18,18 +21,23 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
+
 export default async function handler(req, res) {
   setCors(req, res);
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "GET") return res.status(405).json({ error: "Use GET" });
+
   const { placeIds } = req.query;
   if (!placeIds) return res.status(400).json({ error: "placeIds query param is required (comma separated)" });
+
   const ids = placeIds.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 500);
   if (!ids.length) return res.status(200).json({ matches: {} });
+
   const sql = neon(process.env.DATABASE_URL);
   try {
     const rows = await sql`
-      SELECT id, place_id, description, instagram_url, facebook_url, website_url, current_special, photos
+      SELECT id, place_id, name, description, instagram_url, facebook_url, website_url, current_special, photos,
+             custom_address, custom_hours, menu_url
       FROM restaurants
       WHERE place_id = ANY(${ids}) AND subscription_status = 'active' AND verification_status = 'approved'
     `;
@@ -37,6 +45,13 @@ export default async function handler(req, res) {
     rows.forEach((r) => {
       matches[r.place_id] = {
         restaurantId: r.id,
+        // The restaurant's own saved name — now editable via the portal —
+        // takes precedence over whatever Google's listing calls it, same
+        // reasoning as description/specials already did before this.
+        customName: r.name,
+        customAddress: r.custom_address,
+        customHours: r.custom_hours,
+        menuUrl: r.menu_url,
         description: r.description,
         instagramUrl: r.instagram_url,
         facebookUrl: r.facebook_url,
