@@ -400,6 +400,34 @@ export default async function handler(req, res) {
     // branch showing up alongside its Sydney one). Removing the filter
     // here so the frontend actually has all the branches to choose from.
 
+    // The search box also accepts street-level text (e.g. "Bridge St
+    // Sydney"), but Google's Text Search only treats that as a relevance
+    // hint, not a strict filter — its 100km location bias lets plenty of
+    // otherwise-unrelated nearby restaurants through even when they have
+    // no real connection to the street typed (confirmed happening: a
+    // "Bridge St" search returning results from Darlinghurst, Surry
+    // Hills, and The Rocks with no "Bridge" anywhere in their address).
+    // Requiring every word from what was typed to actually appear in the
+    // result's own returned address fixes that — but only for genuine
+    // location searches. The same search box also doubles as a
+    // business-name search (e.g. "Mecca Bah"), where the name obviously
+    // won't appear in the address at all — filtering that case would
+    // wrongly zero out a valid result. So this only applies when it
+    // actually finds real matches; if nothing qualifies, it backs off and
+    // leaves the results as Google returned them.
+    if (cleanedSuburb && cleanedSuburb.trim()) {
+      const locationTokens = cleanedSuburb.toLowerCase().split(/\s+/).filter((t) => t.length > 1);
+      if (locationTokens.length) {
+        const locationFiltered = results.filter((r) => {
+          const addr = (r.address || "").toLowerCase();
+          return locationTokens.every((t) => addr.includes(t));
+        });
+        if (locationFiltered.length) {
+          results = locationFiltered;
+        }
+      }
+    }
+
     if (cuisine && cuisine.trim()) {
       const requested = cuisine.trim().toLowerCase();
 
