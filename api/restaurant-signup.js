@@ -3,8 +3,10 @@
 // Creates a new restaurant account with a random per-user salt and scrypt
 // password hash, then logs the restaurant in immediately (same as
 // restaurant-login.js) by issuing a session token.
+
 import { neon } from "@neondatabase/serverless";
 import crypto from "crypto";
+
 const ALLOWED_ORIGINS = [
   "https://outtoeat.com.au",
   "https://www.outtoeat.com.au",
@@ -14,6 +16,7 @@ const ALLOWED_ORIGINS = [
   "https://dine-out-app.vercel.app",
   "https://restaurant-portal-seven.vercel.app",
 ];
+
 function setCors(req, res) {
   const origin = req.headers.origin;
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
@@ -23,10 +26,12 @@ function setCors(req, res) {
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
+
 function getClientIp(req) {
   const fwd = req.headers["x-forwarded-for"];
   return (fwd ? fwd.split(",")[0].trim() : req.socket?.remoteAddress) || "unknown";
 }
+
 async function checkRateLimit(sql, key, maxRequests, windowSeconds) {
   const now = new Date();
   const rows = await sql`SELECT window_start, count FROM rate_limits WHERE id = ${key}`;
@@ -43,6 +48,41 @@ async function checkRateLimit(sql, key, maxRequests, windowSeconds) {
   if (rows[0].count >= maxRequests) return false;
   await sql`UPDATE rate_limits SET count = count + 1 WHERE id = ${key}`;
   return true;
+}
+
+// Google Place "types" that genuinely indicate a food/dining venue. Used
+// to catch someone linking an unrelated business (a gym, a hair salon,
+// etc.) to their outtoeat account — confirmed happening in practice with
+// a real gym signing up before this check existed. This runs automatically
+// at signup so it's caught immediately rather than relying only on manual
+// admin review to notice it later.
+const FOOD_PLACE_TYPES = ["restaurant", "cafe", "bar", "bakery", "meal_takeaway", "meal_delivery", "food", "night_club"];
+
+async function isFoodVenue(placeId) {
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  if (!key) {
+    // If we can't verify (missing key), don't block signups over a config
+    // issue on our end — fail open specifically here, since fail-closed
+    // would mean legitimate restaurants can never sign up during an
+    // unrelated misconfiguration.
+    console.error("GOOGLE_PLACES_API_KEY missing — skipping category check");
+    return true;
+  }
+  try {
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(placeId)}&fields=types,name&key=${key}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.status !== "OK" || !data.result) {
+      // Invalid/unknown place_id entirely — treat as failing the check,
+      // since a bogus ID shouldn't be allowed through either.
+      return false;
+    }
+    const types = data.result.types || [];
+    return types.some((t) => FOOD_PLACE_TYPES.includes(t));
+  } catch (err) {
+    console.error("Category check failed:", err.message);
+    return true; // fail open on a transient network/API error, same reasoning as above
+  }
 }
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -66,6 +106,15 @@ export default async function handler(req, res) {
   }
   if (name.length > 200) {
     return res.status(400).json({ error: "Restaurant name is too long" });
+  }
+
+  if (placeId) {
+    const isFood = await isFoodVenue(placeId);
+    if (!isFood) {
+      return res.status(400).json({
+        error: "That Google listing doesn't look like a restaurant, café, or similar food venue. Double-check the Place ID, or sign up without one and add it later.",
+      });
+    }
   }
 
   const sql = neon(process.env.DATABASE_URL);
