@@ -4,7 +4,9 @@
 // Links this restaurant account to a Google Place ID. Deliberately does NOT
 // require an active subscription — a restaurant should be able to link
 // their listing while setting up their account, before deciding to pay.
+
 import { neon } from "@neondatabase/serverless";
+
 const ALLOWED_ORIGINS = [
   "https://outtoeat.com.au",
   "https://www.outtoeat.com.au",
@@ -14,6 +16,7 @@ const ALLOWED_ORIGINS = [
   "https://dine-out-app.vercel.app",
   "https://restaurant-portal-seven.vercel.app",
 ];
+
 function setCors(req, res) {
   const origin = req.headers.origin;
   if (origin && ALLOWED_ORIGINS.includes(origin)) {
@@ -28,6 +31,33 @@ function setCors(req, res) {
 // characters. This is a loose sanity check, not a guarantee the ID is a
 // real, existing place — Google itself is the source of truth for that.
 const PLACE_ID_RE = /^[A-Za-z0-9_-]{10,255}$/;
+
+// Google Place "types" that genuinely indicate a food/dining venue. Same
+// check as restaurant-signup.js — this endpoint is the OTHER place a Place
+// ID gets linked (an existing account changing/adding one later), so it
+// needs the identical check, otherwise someone could just sign up without
+// a Place ID and link a non-food business here instead, bypassing signup's
+// check entirely.
+const FOOD_PLACE_TYPES = ["restaurant", "cafe", "bar", "bakery", "meal_takeaway", "meal_delivery", "food", "night_club"];
+
+async function isFoodVenue(placeId) {
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  if (!key) {
+    console.error("GOOGLE_PLACES_API_KEY missing — skipping category check");
+    return true; // fail open on missing config, same reasoning as restaurant-signup.js
+  }
+  try {
+    const url = `https://maps.googleapis.com/maps/api/place/details/json?place_id=${encodeURIComponent(placeId)}&fields=types,name&key=${key}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    if (data.status !== "OK" || !data.result) return false;
+    const types = data.result.types || [];
+    return types.some((t) => FOOD_PLACE_TYPES.includes(t));
+  } catch (err) {
+    console.error("Category check failed:", err.message);
+    return true; // fail open on a transient network/API error
+  }
+}
 
 export default async function handler(req, res) {
   setCors(req, res);
@@ -46,10 +76,17 @@ export default async function handler(req, res) {
   }
   const cleanPlaceId = placeId.trim();
 
+  const isFood = await isFoodVenue(cleanPlaceId);
+  if (!isFood) {
+    return res.status(400).json({
+      error: "That Google listing doesn't look like a restaurant, café, or similar food venue. Double-check the Place ID.",
+    });
+  }
+
   const sql = neon(process.env.DATABASE_URL);
   try {
     const sessionRows = await sql`
-      SELECT r.id FROM sessions s
+      SELECT r.id, r.place_id AS current_place_id FROM sessions s
       JOIN restaurants r ON r.id = s.restaurant_id
       WHERE s.token = ${token} AND s.expires_at > now()
     `;
@@ -67,9 +104,26 @@ export default async function handler(req, res) {
       return res.status(409).json({ error: "This listing has already been claimed by another account." });
     }
 
-    await sql`
-      UPDATE restaurants SET place_id = ${cleanPlaceId} WHERE id = ${restaurant.id}
-    `;
+    // If this is actually a change (not just re-saving the same ID), reset
+    // verification back to pending — an account previously approved for
+    // one listing shouldn't automatically stay "approved" for a completely
+    // different one it's never been reviewed against. Without this, a
+    // legitimate-looking first listing could get approved, then get swapped
+    // out for an unrelated or fraudulent one afterward with no further check.
+    const isChange = restaurant.current_place_id !== cleanPlaceId;
+
+    if (isChange) {
+      await sql`
+        UPDATE restaurants
+        SET place_id = ${cleanPlaceId}, verification_status = 'pending'
+        WHERE id = ${restaurant.id}
+      `;
+    } else {
+      await sql`
+        UPDATE restaurants SET place_id = ${cleanPlaceId} WHERE id = ${restaurant.id}
+      `;
+    }
+
     return res.status(200).json({ success: true, placeId: cleanPlaceId });
   } catch (err) {
     console.error("update-place-id error:", err); // keep detail server-side only
