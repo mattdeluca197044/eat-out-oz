@@ -2,11 +2,14 @@
 // Called automatically by Stripe when subscription events happen.
 // This must receive the RAW request body (not parsed JSON) to verify the
 // signature, so we disable Vercel's automatic body parsing for this file.
+
 import { neon } from "@neondatabase/serverless";
 import crypto from "crypto";
+
 export const config = {
   api: { bodyParser: false },
 };
+
 function readRawBody(req) {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -31,12 +34,10 @@ function verifyStripeSignature(rawBody, signatureHeader, secret, toleranceSecond
   const timestamp = parts.t;
   const signature = parts.v1;
   if (!timestamp || !signature) return false;
-
   // Reject stale signatures — closes off replay attacks even when the
   // signature itself checks out.
   const age = Math.abs(Date.now() / 1000 - Number(timestamp));
   if (!Number.isFinite(age) || age > toleranceSeconds) return false;
-
   const signedPayload = `${timestamp}.${rawBody}`;
   const expected = crypto.createHmac("sha256", secret).update(signedPayload).digest("hex");
   try {
@@ -45,33 +46,107 @@ function verifyStripeSignature(rawBody, signatureHeader, secret, toleranceSecond
     return false;
   }
 }
+
+// Same email pattern already used in forgot-password.js — reusing it
+// directly rather than introducing a second way of sending mail.
+const FROM_ADDRESS = "outtoeat <bookings@outtoeat.com.au>";
+const PORTAL_URL = "https://restaurant-portal-seven.vercel.app";
+
+async function sendEmail({ to, subject, html }) {
+  const key = process.env.RESEND_API_KEY;
+  if (!key) {
+    console.error("RESEND_API_KEY missing — skipping email send");
+    return;
+  }
+  try {
+    await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ from: FROM_ADDRESS, to, subject, html }),
+    });
+  } catch (err) {
+    console.error("Email send failed:", err.message);
+  }
+}
+
+// Sent once, right when a subscription activates. Nudges the restaurant
+// toward the two things that matter most right after subscribing: setting
+// up their profile, and grabbing the embeddable badge for their own site
+// (a genuine backlink to outtoeat, and free exposure for them).
+async function sendWelcomeEmail({ ownerEmail, restaurantName }) {
+  await sendEmail({
+    to: ownerEmail,
+    subject: "You're all set — here's how to get more from your outtoeat listing",
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+        <h2 style="color:#DE3937;">Welcome aboard, ${restaurantName}!</h2>
+        <p>Your outtoeat subscription is now active — your listing can accept bookings, and you can start customizing your profile right away.</p>
+        <p>One more thing worth doing while you're in there: grab your free <strong>outtoeat badge</strong> and add it to your own website. It's a small "Featured on outtoeat" button that links straight back to your listing — an easy way to show off your visibility and help more people find you.</p>
+        <p><a href="${PORTAL_URL}" style="display:inline-block;background:#DE3937;color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none;font-weight:600;">Go to your dashboard →</a></p>
+        <p style="color:#444;">While you're there, you can also:</p>
+        <ul style="color:#444;">
+          <li>Upload photos and your menu</li>
+          <li>Write your own description and post a current special</li>
+          <li>Correct your name, address, or hours if Google has them wrong</li>
+        </ul>
+        <p style="color:#666;font-size:13px;">Thanks for joining outtoeat — no commission, ever.</p>
+      </div>
+    `,
+  });
+}
+
+const ALLOWED_ORIGINS = [
+  "https://outtoeat.com.au",
+  "https://www.outtoeat.com.au",
+  "https://outtoeat.au",
+  "https://www.outtoeat.au",
+  "https://dine-out-website.vercel.app",
+  "https://dine-out-app.vercel.app",
+  "https://restaurant-portal-seven.vercel.app",
+];
+
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).json({ error: "Use POST" });
+
   const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
   if (!webhookSecret) {
     return res.status(500).json({ error: "Server is missing STRIPE_WEBHOOK_SECRET" });
   }
+
   const rawBody = await readRawBody(req);
   const signature = req.headers["stripe-signature"];
   if (!verifyStripeSignature(rawBody, signature, webhookSecret)) {
     return res.status(400).json({ error: "Invalid signature" });
   }
+
   const event = JSON.parse(rawBody);
   const sql = neon(process.env.DATABASE_URL);
+
   try {
     if (event.type === "checkout.session.completed") {
       const session = event.data.object;
       const restaurantId = session.metadata?.restaurant_id || session.client_reference_id;
       if (restaurantId) {
-        await sql`
+        const rows = await sql`
           UPDATE restaurants
           SET subscription_status = 'active',
               stripe_customer_id = ${session.customer},
               stripe_subscription_id = ${session.subscription}
           WHERE id = ${restaurantId}
+          RETURNING name, owner_email
         `;
+
+        // Fire-and-forget from the webhook's perspective — an email
+        // failure shouldn't turn into a 500 back to Stripe, which would
+        // just cause Stripe to retry an already-successful subscription
+        // update. Errors are logged inside sendEmail() itself.
+        const restaurant = rows[0];
+        if (restaurant?.owner_email) {
+          await sendWelcomeEmail({ ownerEmail: restaurant.owner_email, restaurantName: restaurant.name || "there" });
+        }
       }
     }
+
     if (event.type === "customer.subscription.deleted" || event.type === "customer.subscription.updated") {
       const sub = event.data.object;
       const status = sub.status === "active" || sub.status === "trialing" ? "active" : "inactive";
@@ -81,6 +156,7 @@ export default async function handler(req, res) {
         WHERE stripe_subscription_id = ${sub.id}
       `;
     }
+
     return res.status(200).json({ received: true });
   } catch (err) {
     console.error("stripe-webhook error:", err); // keep detail server-side only
