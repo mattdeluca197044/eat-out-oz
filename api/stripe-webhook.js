@@ -69,25 +69,40 @@ async function sendEmail({ to, subject, html }) {
   }
 }
 
-// Sent once, right when a subscription activates. Nudges the restaurant
-// toward the two things that matter most right after subscribing: setting
-// up their profile, and grabbing the embeddable badge for their own site
-// (a genuine backlink to outtoeat, and free exposure for them).
-async function sendWelcomeEmail({ ownerEmail, restaurantName }) {
+// Sent once, right when a subscription activates. Combines two things
+// that used to risk being two separate emails at the same moment: a
+// straightforward confirmation of what they just subscribed to (plan,
+// price, billing status — the receipt-style reassurance people expect),
+// and a nudge toward the two things that matter most right after
+// subscribing — setting up their profile, and grabbing the embeddable
+// badge for their own site (a genuine backlink to outtoeat, and free
+// exposure for them).
+async function sendSubscriptionConfirmationEmail({ ownerEmail, restaurantName }) {
   await sendEmail({
     to: ownerEmail,
-    subject: "You're all set — here's how to get more from your outtoeat listing",
+    subject: "Your outtoeat subscription is confirmed ✅",
     html: `
       <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
-        <h2 style="color:#DE3937;">Welcome aboard, ${restaurantName}!</h2>
-        <p>Your outtoeat subscription is now active — your listing can accept bookings, and you can start customizing your profile right away.</p>
-        <p>One more thing worth doing while you're in there: grab your free <strong>outtoeat badge</strong> and add it to your own website. It's a small "Featured on outtoeat" button that links straight back to your listing — an easy way to show off your visibility and help more people find you.</p>
+        <h2 style="color:#DE3937;">You're subscribed, ${restaurantName}!</h2>
+        <p>This confirms your outtoeat subscription is now <strong>active</strong> and your listing can accept bookings.</p>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
+          <tr>
+            <td style="padding:6px 0;color:#666;">Plan</td>
+            <td style="padding:6px 0;text-align:right;font-weight:600;">$29/month</td>
+          </tr>
+          <tr>
+            <td style="padding:6px 0;color:#666;">Status</td>
+            <td style="padding:6px 0;text-align:right;font-weight:600;color:#4F8A5B;">Active</td>
+          </tr>
+        </table>
+        <p style="color:#666;font-size:13px;">You'll be billed automatically each month until you cancel — no lock-in, cancel anytime from your dashboard.</p>
         <p><a href="${PORTAL_URL}" style="display:inline-block;background:#DE3937;color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none;font-weight:600;">Go to your dashboard →</a></p>
-        <p style="color:#444;">While you're there, you can also:</p>
+        <p style="color:#444;">Now that you're subscribed, here's what's unlocked:</p>
         <ul style="color:#444;">
-          <li>Upload photos and your menu</li>
-          <li>Write your own description and post a current special</li>
+          <li>Full control over your listing — description, photos, menu, and current specials</li>
           <li>Correct your name, address, or hours if Google has them wrong</li>
+          <li>Accept table bookings directly, no commission ever</li>
+          <li>Your own <strong>outtoeat badge</strong> — a free "Featured on outtoeat" button for your own website, linking straight back to your listing. Grab the code from your dashboard.</li>
         </ul>
         <p style="color:#666;font-size:13px;">Thanks for joining outtoeat — no commission, ever.</p>
       </div>
@@ -142,7 +157,7 @@ export default async function handler(req, res) {
         // update. Errors are logged inside sendEmail() itself.
         const restaurant = rows[0];
         if (restaurant?.owner_email) {
-          await sendWelcomeEmail({ ownerEmail: restaurant.owner_email, restaurantName: restaurant.name || "there" });
+          await sendSubscriptionConfirmationEmail({ ownerEmail: restaurant.owner_email, restaurantName: restaurant.name || "there" });
         }
       }
     }
