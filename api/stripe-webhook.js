@@ -110,6 +110,46 @@ async function sendSubscriptionConfirmationEmail({ ownerEmail, restaurantName })
   });
 }
 
+// Sent to the business owner (not the restaurant) whenever a restaurant's
+// subscription payment fails. Stripe's own dashboard notification center
+// doesn't support email delivery for this particular event type, so this
+// reuses the same Resend setup as everything else here instead of relying
+// on Stripe's UI to support the channel we actually want.
+async function sendPaymentFailedAlert({ restaurantName, restaurantEmail, amountDue, currency, attemptCount, nextAttempt, hostedInvoiceUrl }) {
+  const ownerEmail = process.env.OWNER_ALERT_EMAIL;
+  if (!ownerEmail) {
+    console.error("OWNER_ALERT_EMAIL missing — skipping payment-failed alert");
+    return;
+  }
+
+  const amountFormatted = typeof amountDue === "number"
+    ? `$${(amountDue / 100).toFixed(2)} ${(currency || "aud").toUpperCase()}`
+    : "unknown amount";
+
+  const nextAttemptText = nextAttempt
+    ? new Date(nextAttempt * 1000).toLocaleDateString("en-AU", { day: "numeric", month: "short", year: "numeric" })
+    : "No further automatic attempts scheduled — Stripe has stopped retrying.";
+
+  await sendEmail({
+    to: ownerEmail,
+    subject: `⚠️ Payment failed — ${restaurantName}`,
+    html: `
+      <div style="font-family:sans-serif;max-width:480px;margin:0 auto;">
+        <h2 style="color:#DE3937;">A subscription payment failed</h2>
+        <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
+          <tr><td style="padding:6px 0;color:#666;">Restaurant</td><td style="padding:6px 0;text-align:right;font-weight:600;">${restaurantName}</td></tr>
+          <tr><td style="padding:6px 0;color:#666;">Account email</td><td style="padding:6px 0;text-align:right;">${restaurantEmail}</td></tr>
+          <tr><td style="padding:6px 0;color:#666;">Amount due</td><td style="padding:6px 0;text-align:right;font-weight:600;">${amountFormatted}</td></tr>
+          <tr><td style="padding:6px 0;color:#666;">Attempt number</td><td style="padding:6px 0;text-align:right;">${attemptCount ?? "unknown"}</td></tr>
+          <tr><td style="padding:6px 0;color:#666;">Next retry</td><td style="padding:6px 0;text-align:right;">${nextAttemptText}</td></tr>
+        </table>
+        ${hostedInvoiceUrl ? `<p><a href="${hostedInvoiceUrl}" style="display:inline-block;background:#DE3937;color:#fff;padding:12px 20px;border-radius:4px;text-decoration:none;font-weight:600;">View invoice in Stripe →</a></p>` : ""}
+        <p style="color:#666;font-size:13px;">Stripe will keep retrying automatically per your Smart Retries settings. If this restaurant's subscription eventually lapses, their listing content will stop showing on the public site (per the existing subscription_status gate), but their account and data stay intact.</p>
+      </div>
+    `,
+  });
+}
+
 const ALLOWED_ORIGINS = [
   "https://outtoeat.com.au",
   "https://www.outtoeat.com.au",
@@ -170,6 +210,29 @@ export default async function handler(req, res) {
         SET subscription_status = ${status}
         WHERE stripe_subscription_id = ${sub.id}
       `;
+    }
+
+    if (event.type === "invoice.payment_failed") {
+      const invoice = event.data.object;
+      const customerId = invoice.customer;
+
+      // Look up which restaurant this is so the alert email is actually
+      // useful — without this we'd just have a Stripe customer ID with no
+      // way to know who to follow up with.
+      const rows = await sql`
+        SELECT name, owner_email FROM restaurants WHERE stripe_customer_id = ${customerId}
+      `;
+      const restaurant = rows[0];
+
+      await sendPaymentFailedAlert({
+        restaurantName: restaurant?.name || "Unknown restaurant",
+        restaurantEmail: restaurant?.owner_email || "unknown — no matching account found",
+        amountDue: invoice.amount_due,
+        currency: invoice.currency,
+        attemptCount: invoice.attempt_count,
+        nextAttempt: invoice.next_payment_attempt,
+        hostedInvoiceUrl: invoice.hosted_invoice_url,
+      });
     }
 
     return res.status(200).json({ received: true });
