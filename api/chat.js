@@ -118,7 +118,9 @@ Be concise and specific, using the data above where relevant. If asked about som
 Here are the current listings you can recommend from:
 ${JSON.stringify(context)}
 
-Only recommend places from this list — never invent a restaurant that isn't in it. If nothing in the list fits what they're asking for, say so honestly rather than making something up. Keep replies short, warm, and conversational — a couple of sentences, not a formatted report.`;
+Before saying you don't have something, re-read the ENTIRE list above carefully, field by field (name, cuisine, suburb) — the answer is very often already sitting in that list, even if it's not the first or most obvious entry. Only say something isn't available after you've actually checked every entry and confirmed none of them match.
+
+Only recommend places from this list — never invent a restaurant that isn't in it. If nothing in the list genuinely fits what they're asking for, say so honestly rather than making something up. Keep replies short, warm, and conversational — a couple of sentences, not a formatted report.`;
   }
 
   try {
@@ -132,6 +134,7 @@ Only recommend places from this list — never invent a restaurant that isn't in
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
         max_tokens: 500,
+        temperature: 0.2, // favor consistent, grounded answers over creative variation
         system: systemPrompt,
         messages: [...trimmedHistory, { role: "user", content: trimmedMessage }],
       }),
