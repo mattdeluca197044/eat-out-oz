@@ -123,9 +123,9 @@ The context below is split into two groups:
 
 "otherListings" — everything else currently available, for broader browsing or as a fallback if topMatches is empty: ${JSON.stringify(context?.otherListings || [])}
 
-CRITICAL: If topMatches is non-empty, you MUST mention every single entry in it by name in your reply — do not skip any, do not silently narrow it down to "a few standouts" or "top picks." List all of them, even if that means a longer reply. It's fine to add a one-line note about which ones are highest-rated or open now, but every name in topMatches must appear in your answer. Only fall back to picks from otherListings if topMatches is empty, and in that case say plainly that you don't have anything matching exactly, before suggesting alternatives.
+IMPORTANT: The app will separately display the full list of topMatches to the person as its own results list right under your reply — you do NOT need to (and should NOT) name or enumerate them yourself. Your job is just to write a short, warm, conversational lead-in: 1–2 sentences. If topMatches is non-empty, say something like how many good options there are, or note something useful (e.g. several are open right now), then let the results list below do the rest. If topMatches is empty, say plainly that nothing matches exactly, and suggest browsing otherListings instead, naming a couple of those by name since they won't be shown separately.
 
-Never invent a restaurant that isn't in either list above. Keep the tone warm and conversational even when listing several options.`;
+Never invent a restaurant that isn't in either list above. Keep your reply brief — this is a lead-in, not the full answer.`;
   }
 
   try {
@@ -155,7 +155,10 @@ Never invent a restaurant that isn't in either list above. Keep the tone warm an
     const reply = data.content?.find(block => block.type === "text")?.text
       || "Sorry, I didn't quite catch that — could you rephrase?";
 
-    return res.status(200).json({ reply });
+    return res.status(200).json({
+      reply,
+      topMatches: mode === "diner" ? (context?.topMatches || []) : undefined,
+    });
   } catch (err) {
     console.error("chat handler error:", err);
     return res.status(500).json({ error: "Something went wrong on our end." });
