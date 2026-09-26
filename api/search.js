@@ -45,6 +45,33 @@ async function checkRateLimit(sql, key, maxRequests, windowSeconds) {
   return true;
 }
 
+// How long a cached search result stays fresh before the next request for
+// that same suburb/category/cuisine/occasion combo triggers a real Google
+// lookup again. Restaurant listings, ratings, and hours don't meaningfully
+// change minute-to-minute, so a few hours is a safe, generous window —
+// long enough that popular suburbs are effectively instant for everyone
+// after the first person searches them, short enough that things like a
+// newly-opened restaurant show up within the same day.
+const CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours
+
+// Builds a stable key identifying this exact search — same inputs should
+// always produce the same key, so a second identical request (from a
+// different visitor, or the same one searching again later) hits the
+// cache instead of Google. Deliberately built from the CLEANED suburb
+// (post stripCuisineFromSuburb) and lowercased throughout, so trivial
+// differences like casing or the cuisine word being duplicated in the
+// suburb text don't fragment the cache into near-duplicate entries.
+function buildCacheKey({ cleanedSuburb, category, cuisine, occasion, stateTrimmed, wantFull }) {
+  return [
+    (cleanedSuburb || "").trim().toLowerCase(),
+    (category || "").trim().toLowerCase(),
+    (cuisine || "").trim().toLowerCase(),
+    (occasion || "").trim().toLowerCase(),
+    (stateTrimmed || "").trim().toUpperCase(),
+    wantFull ? "full" : "partial",
+  ].join("|");
+}
+
 // State name + a fallback "centre point" (capital city) used only when the
 // visitor's own coordinates aren't available (e.g. local dev, or a rare
 // request with no geo headers at all).
@@ -205,17 +232,39 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Occasion parameter too long" });
   }
 
-  const key = process.env.GOOGLE_PLACES_API_KEY;
-  if (!key) {
-    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY" });
-  }
-
   const sql = neon(process.env.DATABASE_URL);
   const ip = getClientIp(req);
+  const wantFull = req.query.full === "1";
+  const cleanedSuburb = stripCuisineFromSuburb(suburbTrimmed, cuisine);
+
+  const cacheKey = buildCacheKey({ cleanedSuburb, category, cuisine, occasion, stateTrimmed, wantFull });
+
+  // Cache check happens first, before the rate limit or the Google API key
+  // are even needed — a cache hit is just a fast Postgres read, so this is
+  // the path almost every repeat visitor to a popular suburb takes.
+  try {
+    const cached = await sql`SELECT results, created_at FROM search_cache WHERE cache_key = ${cacheKey}`;
+    if (cached.length) {
+      const ageSeconds = (Date.now() - new Date(cached[0].created_at).getTime()) / 1000;
+      if (ageSeconds < CACHE_TTL_SECONDS) {
+        res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
+        return res.status(200).json({ ...cached[0].results, cached: true });
+      }
+    }
+  } catch (err) {
+    // A cache read failure should never break search — just fall through
+    // to a live lookup as if there were no cache at all.
+    console.error("search: cache read failed:", err);
+  }
 
   const allowed = await checkRateLimit(sql, `search:${ip}`, 40, 60);
   if (!allowed) {
     return res.status(429).json({ error: "Too many requests. Please slow down and try again shortly." });
+  }
+
+  const key = process.env.GOOGLE_PLACES_API_KEY;
+  if (!key) {
+    return res.status(500).json({ error: "Server is missing GOOGLE_PLACES_API_KEY" });
   }
 
   const categoryTerm =
@@ -244,7 +293,6 @@ export default async function handler(req, res) {
   // names. With a location bias, that same unresolvable query still
   // anchors near the visitor instead of spanning the whole country.
   const visitor = getVisitorLocation(req);
-  const cleanedSuburb = stripCuisineFromSuburb(suburbTrimmed, cuisine);
 
   // A user-selected state (from the frontend's state dropdown) is safe to
   // bake into the query text — unlike the earlier auto-detected visitor
@@ -295,7 +343,6 @@ export default async function handler(req, res) {
     );
   }
 
-  const wantFull = req.query.full === "1";
   const MAX_PAGES = wantFull ? 3 : 2;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -501,6 +548,30 @@ export default async function handler(req, res) {
       results = results.filter((r) => nearestWaterlineDistance(r.lat, r.lng) <= WATER_MAX_DISTANCE_METERS);
     }
 
+    const responseBody = {
+      query: fullQuery,
+      detectedState: visitor.stateCode,
+      occasion: occasion || null,
+      count: results.length,
+      results,
+    };
+
+    // Store this for next time — a genuine Google fetch just happened, so
+    // whoever searches this exact suburb/category/cuisine/occasion
+    // combination next (anyone, not just this visitor) gets it instantly
+    // from here instead of waiting on Google again.
+    try {
+      await sql`
+        INSERT INTO search_cache (cache_key, results, created_at)
+        VALUES (${cacheKey}, ${JSON.stringify(responseBody)}::jsonb, now())
+        ON CONFLICT (cache_key) DO UPDATE SET results = ${JSON.stringify(responseBody)}::jsonb, created_at = now()
+      `;
+    } catch (err) {
+      // A cache write failure should never break the actual search result
+      // being returned — just means this one won't be cached this time.
+      console.error("search: cache write failed:", err);
+    }
+
     // Shortened while actively iterating on search logic — a long cache
     // here was masking fixes behind stale 304 responses (a fixed query
     // would keep returning an old broken response for up to an hour after
@@ -508,13 +579,7 @@ export default async function handler(req, res) {
     // enough to absorb rapid repeat requests without hiding future changes
     // for long. Worth raising again once the search logic has stabilised.
     res.setHeader("Cache-Control", "s-maxage=60, stale-while-revalidate=300");
-    return res.status(200).json({
-      query: fullQuery,
-      detectedState: visitor.stateCode,
-      occasion: occasion || null,
-      count: results.length,
-      results,
-    });
+    return res.status(200).json({ ...responseBody, cached: false });
   } catch (err) {
     console.error("search error:", err); // keep detail server-side only
     return res.status(500).json({ error: "Upstream fetch failed" });
