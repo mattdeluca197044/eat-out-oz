@@ -63,6 +63,7 @@ const CACHE_TTL_SECONDS = 6 * 60 * 60; // 6 hours
 // suburb text don't fragment the cache into near-duplicate entries.
 function buildCacheKey({ cleanedSuburb, category, cuisine, occasion, stateTrimmed, wantFull }) {
   return [
+    "v2", // bumped when cuisine filtering moved to Places API (New) type verification
     (cleanedSuburb || "").trim().toLowerCase(),
     (category || "").trim().toLowerCase(),
     (cuisine || "").trim().toLowerCase(),
@@ -211,6 +212,64 @@ function nearestWaterlineDistance(lat, lng) {
     if (d < min) min = d;
   }
   return min;
+}
+
+// Google's legacy Text Search returns no cuisine information, so a
+// "thai restaurants Parramatta" query is padded with unrelated restaurants.
+// Places API (New) can restrict a search to a specific place type, so we use
+// it purely as a verifier: it returns the IDs of places Google itself types
+// as that cuisine, and the legacy results are filtered down to those IDs.
+// Place IDs are shared between the two APIs. If the call fails for any reason
+// (API not enabled, key restricted, network) it returns null and the caller
+// leaves the results unfiltered, so search never breaks because of this.
+const CUISINE_PLACE_TYPES = {
+  thai: "thai_restaurant", italian: "italian_restaurant", chinese: "chinese_restaurant",
+  japanese: "japanese_restaurant", indian: "indian_restaurant", mexican: "mexican_restaurant",
+  vietnamese: "vietnamese_restaurant", korean: "korean_restaurant", lebanese: "lebanese_restaurant",
+  greek: "greek_restaurant", seafood: "seafood_restaurant", vegan: "vegan_restaurant",
+  pizza: "pizza_restaurant", burger: "hamburger_restaurant", french: "french_restaurant",
+  spanish: "spanish_restaurant", turkish: "turkish_restaurant", indonesian: "indonesian_restaurant",
+  american: "american_restaurant", sushi: "sushi_restaurant", ramen: "ramen_restaurant",
+  "middle eastern": "middle_eastern_restaurant", bbq: "barbecue_restaurant", steak: "steak_house",
+};
+
+async function fetchPlaceIdsOfType({ queryText, includedType, lat, lng, key }) {
+  const ids = new Set();
+  let pageToken = null;
+  try {
+    for (let page = 0; page < 3; page++) {
+      const body = {
+        textQuery: queryText,
+        includedType,
+        strictTypeFiltering: true,
+        pageSize: 20,
+        regionCode: "AU",
+        locationBias: { circle: { center: { latitude: lat, longitude: lng }, radius: 50000 } },
+      };
+      if (pageToken) body.pageToken = pageToken;
+      const r = await fetch("https://places.googleapis.com/v1/places:searchText", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": key,
+          "X-Goog-FieldMask": "places.id,nextPageToken",
+        },
+        body: JSON.stringify(body),
+      });
+      if (!r.ok) {
+        console.error("search: Places API (New) verify failed:", r.status, await r.text());
+        return page === 0 ? null : ids;
+      }
+      const data = await r.json();
+      (data.places || []).forEach((p) => p.id && ids.add(p.id));
+      pageToken = data.nextPageToken || null;
+      if (!pageToken) break;
+    }
+    return ids;
+  } catch (err) {
+    console.error("search: Places API (New) verify error:", err);
+    return null;
+  }
 }
 
 export default async function handler(req, res) {
@@ -471,6 +530,25 @@ export default async function handler(req, res) {
         });
         if (locationFiltered.length) {
           results = locationFiltered;
+        }
+      }
+    }
+
+    // Verify cuisine against Google's own place types (see fetchPlaceIdsOfType).
+    // Skipped for pubs/clubs/cafes (they have their own handling) and for
+    // cuisines Google has no type for.
+    if (cuisine && cuisine.trim() && (!category || ["restaurant", "takeaway", "hatted"].includes(category))) {
+      const includedType = CUISINE_PLACE_TYPES[cuisine.trim().toLowerCase()];
+      if (includedType) {
+        const verifiedIds = await fetchPlaceIdsOfType({
+          queryText: fullQuery,
+          includedType,
+          lat: visitor.lat,
+          lng: visitor.lng,
+          key,
+        });
+        if (verifiedIds) {
+          results = results.filter((r) => verifiedIds.has(r.placeId));
         }
       }
     }
