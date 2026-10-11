@@ -535,9 +535,10 @@ export default async function handler(req, res) {
     }
 
     // Verify cuisine against Google's own place types (see fetchPlaceIdsOfType).
-    // Skipped for pubs/clubs/cafes (they have their own handling) and for
-    // cuisines Google has no type for.
-    if (cuisine && cuisine.trim() && (!category || ["restaurant", "takeaway", "hatted"].includes(category))) {
+    // Applied to every category tab (cafes, pubs and clubs return loosely
+    // related venues for a cuisine query too); skipped only for cuisines
+    // Google has no type for.
+    if (cuisine && cuisine.trim()) {
       const includedType = CUISINE_PLACE_TYPES[cuisine.trim().toLowerCase()];
       if (includedType) {
         const verifiedIds = await fetchPlaceIdsOfType({
