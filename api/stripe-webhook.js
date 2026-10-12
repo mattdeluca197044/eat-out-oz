@@ -88,7 +88,7 @@ async function sendSubscriptionConfirmationEmail({ ownerEmail, restaurantName })
         <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:14px;">
           <tr>
             <td style="padding:6px 0;color:#666;">Plan</td>
-            <td style="padding:6px 0;text-align:right;font-weight:600;">$29/month</td>
+            <td style="padding:6px 0;text-align:right;font-weight:600;">$29.99/month</td>
           </tr>
           <tr>
             <td style="padding:6px 0;color:#666;">Status</td>
