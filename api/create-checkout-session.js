@@ -1,6 +1,6 @@
 // POST /api/create-checkout-session
 // Headers: Authorization: Bearer <token>
-// Creates a Stripe Checkout session for the $29/month restaurant subscription
+// Creates a Stripe Checkout session for the A$29.99/month restaurant subscription
 // and returns the URL to redirect the restaurant owner to.
 import { neon } from "@neondatabase/serverless";
 const ALLOWED_ORIGINS = [
@@ -23,7 +23,10 @@ function setCors(req, res) {
 }
 // Server-side price reference — the client never supplies an amount, so
 // there's no way to tamper with what gets charged.
-const STRIPE_PRICE_ID = "price_1TzpatLJlEBY2b7SRGuKfmy4";
+// Read from the STRIPE_PRICE_ID environment variable so the same code can run
+// against a Stripe sandbox (test) price or the live price. Falls back to the
+// original hardcoded live price if the variable isn't set.
+const STRIPE_PRICE_ID = process.env.STRIPE_PRICE_ID || "price_1TzpatLJlEBY2b7SRGuKfmy4";
 const PORTAL_URL = "https://restaurant-portal-seven.vercel.app";
 export default async function handler(req, res) {
   setCors(req, res);
