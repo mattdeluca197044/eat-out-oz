@@ -13,6 +13,11 @@ const ALLOWED_ORIGINS = [
   "https://dine-out-website.vercel.app",
   "https://dine-out-app.vercel.app",
   "https://restaurant-portal-seven.vercel.app",
+  // Native app (Capacitor) origins
+  "capacitor://localhost",
+  "ionic://localhost",
+  "https://localhost",
+  "http://localhost",
 ];
 
 function setCors(req, res) {
